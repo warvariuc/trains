@@ -5,3 +5,6 @@
 *.pyc
 *.pyo
 __pycache__
+
+# local settings
+*/settings/local.py
