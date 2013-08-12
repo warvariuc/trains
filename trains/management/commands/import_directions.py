@@ -1,8 +1,7 @@
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
 from django.core.management.base import BaseCommand
-from django.db import transaction
-from django.db.utils import IntegrityError
+from django.db import transaction, IntegrityError
 
 from trains.models import Region, Direction, Station
 

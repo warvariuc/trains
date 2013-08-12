@@ -1,24 +1,49 @@
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
 from django.contrib import admin
-from .models.station import Station
-from .models.direction import Direction
-from .models.region import Region
-from .models.schedule import Route, Schedule
+from django.utils.safestring import mark_safe
+from django.core.urlresolvers import reverse
+from django.utils.translation import ugettext as _
+
+from .models import Station, Direction, Region, Route, Schedule
 
 
-# class CustomerAdmin(admin.ModelAdmin):
-#     list_display = ('__unicode__', 'email', 'date_of_birth', 'gender',
-#                     'is_active', 'last_login', 'created_time', 'edited_time')
-#     fields = ('last_name', 'first_name', 'middle_name', 'email',
-#               'date_of_birth', 'gender', 'phone', 'mnogoru', 'sclub',
-#               'is_active')
-#     search_fields = ('last_name', 'first_name', 'middle_name', 'email',
-#                      'gender', 'phone')
-#     list_filter = ('is_active',)
+# http://stackoverflow.com/questions/9919780
+def add_link_field(target_model=None, field='', link_text=_('Редактировать')):
+
+    def add_link(cls):
+        reverse_name = target_model or cls.model.__name__.lower()
+
+        def link(self, instance):
+            app_name = instance._meta.app_label
+            reverse_path = "admin:%s_%s_change" % (app_name, reverse_name)
+            link_obj = getattr(instance, field, None) or instance
+            url = reverse(reverse_path, args=(link_obj.id,))
+            _link_text = link_text(link_obj) if callable(link_text) else link_text
+            return mark_safe("<a href='%s'>%s</a>" % (url, _link_text))
+
+        link.allow_tags = True
+        link.short_description = reverse_name + ' link'
+        cls.link = link
+        cls.readonly_fields = list(getattr(cls, 'readonly_fields', [])) + ['link']
+        return cls
+
+    return add_link
 
 
-admin.site.register(Region)
+@add_link_field()
+class DirectionInline(admin.TabularInline):
+    model = Direction
+    fields = ['link']
+    list_display = (lambda _: 'asdf',)
+    can_delete = False
+
+
+class RegionAdmin(admin.ModelAdmin):
+    inlines = [DirectionInline]
+
+
+admin.site.register(Region, RegionAdmin)
 admin.site.register(Direction)
 admin.site.register(Station)
 admin.site.register(Route)
