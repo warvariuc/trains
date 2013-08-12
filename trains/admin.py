@@ -3,7 +3,7 @@ __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 from django.contrib import admin
 from django.utils.safestring import mark_safe
 from django.core.urlresolvers import reverse
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from .models import Station, Direction, Region, Route, Schedule
 
@@ -32,11 +32,10 @@ def add_link_field(target_model=None, field='', link_text=_('Редактиро�
 
 
 @add_link_field()
-class DirectionInline(admin.TabularInline):
+class DirectionInline(admin.options.InlineModelAdmin):
     model = Direction
-    fields = ['link']
-    list_display = (lambda _: 'asdf',)
-    can_delete = False
+    template = 'edit_inline.html'
+    extra = 0
 
 
 class RegionAdmin(admin.ModelAdmin):
