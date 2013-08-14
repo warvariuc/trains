@@ -6,6 +6,7 @@ from django.contrib.admin.templatetags.admin_static import static
 from django.utils.safestring import mark_safe
 from django.core.urlresolvers import reverse
 from django.utils.translation import ugettext_lazy as _
+from django.utils.http import urlencode
 
 from .models import Station, Direction, Region, Route, Schedule
 
@@ -24,19 +25,19 @@ def add_related_links(foreign_key_field):
 
         def links(self, instance):
             if instance.id is None:
-                return
+                return ''
             links = []
-            for direction in related_model.objects.filter(
+            for related_obj in related_model.objects.filter(
                     **{foreign_key_field_name: instance.id}):
-                url = reverse(reverse_path + 'change', args=(direction.id,))
-                links.append('<a href="%s">%s</a>' % (url, direction))
-            html = [' | '.join(links)]
-            html.append('| <a href="%s" class="add-another" title="%s">'
-                          % (reverse(reverse_path + 'add'), _('Add Another')))
-            html.append('<img src="%s" width="10" height="10"/></a>'
-                        % static('admin/img/icon_addlink.gif'))
-
-            return mark_safe(''.join(html))
+                url = reverse(reverse_path + 'change', args=(related_obj.id,))
+                links.append('<a href="%s">%s</a>' % (url, related_obj))
+            add_url = '%s?%s' % (reverse(reverse_path + 'add'),
+                                 urlencode({foreign_key_field_name: instance.id}))
+            links.append(
+                '<a href="%s" class="add-another" title="%s">'
+                '<img src="%s" width="10" height="10"/></a>'
+                % (add_url, _('Add Another'), static('admin/img/icon_addlink.gif')))
+            return mark_safe(' | '.join(links))
 
         links.allow_tags = True
         links.short_description = related_model._meta.verbose_name_plural
@@ -54,8 +55,13 @@ class RegionAdmin(admin.ModelAdmin):
     pass
 
 
+@add_related_links(Route.direction)
+class DirectionAdmin(admin.ModelAdmin):
+    pass
+
+
 admin.site.register(Region, RegionAdmin)
-admin.site.register(Direction)
+admin.site.register(Direction, DirectionAdmin)
 admin.site.register(Station)
 admin.site.register(Route)
 admin.site.register(Schedule)
