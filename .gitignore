@@ -8,3 +8,5 @@ __pycache__
 
 # local settings
 */settings/local.py
+
+*.sqlite

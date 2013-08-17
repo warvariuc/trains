@@ -859,14 +859,11 @@ class Command(BaseCommand):
             region = Region.objects.create(name=region_name)
             for direction_name, stations in directions.items():
                 self.stdout.write('  Направление: %s' % direction_name)
-                Direction.objects.create(name=direction_name, region=region)
+                direction = Direction.objects.create(name=direction_name, region=region)
                 for yandex_id, station_name in stations.items():
-                    try:
-                        self.stdout.write('    Станция: %s' % station_name)
-                        Station.objects.create(name=station_name, yandex_id=yandex_id)
-                    except IntegrityError:
-                        # одна и та же станция может встречаться в разных направлениях
-                        if station_name != Station.objects.get(yandex_id=yandex_id).name:
-                            raise
+                    self.stdout.write('    Станция: %s' % station_name)
+                    station, _ = Station.objects.get_or_create(
+                        id=yandex_id, defaults={'name': station_name})
+                    station.directions.add(direction)
 
         transaction.commit()
