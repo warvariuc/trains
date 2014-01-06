@@ -3,9 +3,12 @@ import sys
 import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, thread as futures_thread
+from urllib import parse as urlparse
+import traceback
 
 from requests import Session
+from lxml import etree
 
 
 logger = logging.getLogger(__name__)
@@ -20,70 +23,107 @@ class MyThreadPoolExecutor(ThreadPoolExecutor):
         self._work_queue = queue.Queue(queue_max_size)
 
 
-class AsyncSession(Session):
+def _worker(executor_reference, work_queue):
+    try:
+        while True:
+            work_item = work_queue.get(block=True)
+            if work_item is not None:
+                work_item.run()
+                work_queue.task_done()
+                continue
+            executor = executor_reference()
+            # Exit if:
+            #   - The interpreter is shutting down OR
+            #   - The executor that owns the worker has been collected OR
+            #   - The executor that owns the worker has been shutdown.
+            if futures_thread._shutdown or executor is None or executor._shutdown:
+                # Notice other workers
+                work_queue.put(None)
+                return
+            del executor
+    except BaseException:
+        futures_thread._base.LOGGER.critical('Exception in worker', exc_info=True)
 
-    def __init__(self, max_workers=5, *args, **kwargs):
-        """Create an AsyncSession
 
-        ProcessPoolExecutor is not supported because Response objects are not picklable.
-        If you provide both `executor` and `max_workers`, the latter is ignored and provided
-        executor is used as is.
-        """
-        super(AsyncSession, self).__init__(*args, **kwargs)
-        self.executor = MyThreadPoolExecutor(max_workers=max_workers)
+# monkey patching: http://bugs.python.org/issue14119#msg207512
+futures_thread._worker = _worker
 
-    def request(self, *args, callback=None, errback=None, **kwargs):
-        """Maintains the existing api for Session.request.
 
-        Used by all of the higher level methods, e.g. Session.get.
-        """
+# passing session, item and other objects as arguments to callbacks makes code thread-safer
+class Spider():
+
+    start_urls = ['http://m.rasp.yandex.ru/direction?city=213']
+    download_delay = 0.5  # seconds
+    max_workers = 5
+
+    def __init__(self):
+        self.executor = MyThreadPoolExecutor(self.max_workers)
+        self.collected_items = queue.Queue()
+
+    def start(self):
+        def start_requests():
+            for url in self.start_urls:
+                self.start_request(url)
+        logger.debug('Starting spider requests')
+        self.executor.submit(start_requests)
+
+    def start_request(self, url):
+        session = Session()
+        self.do_request(session, 'GET', url, callback=self.parse)
+
+    def do_request(self, session, method, url, *args, callback=None, errback=None, **kwargs):
+        assert callback or errback, 'A callback must be specified'
+
         def request_done(_future):
             logger.debug('Request done in thread %s', threading.current_thread())
             exc = _future.exception()
             if exc:
+                logger.error('There was an exception: %s\n%s',
+                             exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
                 if errback:
-                    errback(exc)
+                    errback(session, exc)
             else:
                 if callback:
-                    callback(_future.result())
+                    callback(session, _future.result())
 
-        logger.debug('AsyncSession.request in thread %s', threading.current_thread())
-        future = self.executor.submit(
-            super(AsyncSession, self).request, *args, **kwargs)  # Future object
+        # the queue may be full, so the next call will block until the queue gets some room
+        future = self.executor.submit(session.request, method, url, *args, **kwargs)
+        logger.debug('do_request in thread %s: %s %s', threading.current_thread(), method, url)
         future.add_done_callback(request_done)
+        # time.sleep(self.download_delay)
 
         return future
 
+    def parse(self, session, response):
+        print('parse: %s %s' % (response.url, response.status_code))
+        html = etree.HTML(response.content)
+        directions = html.xpath('//div[@class="b-choose-geo"]/ul/li/a')
+        for direction in directions:
+            direction_name = direction.xpath('./text()')[0]
+            direction_url = direction.xpath('./@href')[0]
+            if 'direction=_unknown' in direction_url:
+                continue
+            direction_url = urlparse.urljoin(response.url, direction_url)
+            print('Found a direction: %s (%s)' % (direction_name, direction_url))
+            item = {'direction_name': direction_name}
+            self.do_request(
+                session, 'GET', direction_url,
+                callback=lambda session, response, item=item: self.parse_direction(session, response, item))
 
-class Spider():
-
-    start_urls = [
-        'http://m.rasp.yandex.ru/direction?city=213',
-    ]
-    download_delay = 0.5  # seconds
-
-    def __init__(self):
-        self.session = AsyncSession(max_workers=5)
-
-    # @property
-    # def start_urls(self):
-    #     for i in range(50):
-    #         print('yielding url #%s' % i)
-    #         yield 'http://github.com/warvariuc/'
-
-    def start_requests(self):
-        for url in self.start_urls:
-            self.start_request(url)
-            time.sleep(self.download_delay)
-
-    def start_request(self, url):
-        self.session.get(url, callback=self.parse, errback=self.error)
-
-    def parse(self, response):
-        print('callback %s %s' % (response.url, response.status_code))
-
-    def error(self, exc):
-        print('There was an exception: %s' % exc)
+    def parse_direction(self, session, response, item):
+        import ipdb; from pprint import pprint; ipdb.set_trace()
+        print('parse_direction: %s %s' % (response.url, response.status_code))
+        html = etree.HTML(response.content)
+        stations = html.xpath('//select[@id="id_station_from"]/option')
+        for station in stations:
+            _item = item.copy()
+            _item.update({
+                'station_name': station.xpath('./text()')[0],
+                'station_id': int(station.xpath('./@value')[0]),
+            })
+            self.collected_items.put(_item)
+            # print('Found a station: %(direction_name)s, %(station_name)s (%(station_id)s)' % item)
+        #     self.do_request(session, 'GET', direction_url, callback=self.parse_direction)
 
 
 LOGGING_CFG = {
@@ -91,7 +131,8 @@ LOGGING_CFG = {
     'disable_existing_loggers': False,
     'formatters': {
         'standard': {
-            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+            'format': '%(asctime)s.%(msecs).03d [%(levelname)s] %(name)s: %(message)s',
+            'datefmt': '%H:%M:%S',
         },
     },
     'handlers': {
@@ -111,4 +152,12 @@ LOGGING_CFG = {
 logging.config.dictConfig(LOGGING_CFG)
 
 
-Spider().start_requests()
+spider = Spider()
+spider.start()
+logger.debug('Waiting for the items')
+while spider.executor._work_queue.unfinished_tasks or not spider.collected_items.empty():
+    try:
+        item = spider.collected_items.get(timeout=0.25)
+    except queue.Empty:
+        continue
+    print('Station: {direction_name}, {station_name} ({station_id})'.format(**item), id(item))
