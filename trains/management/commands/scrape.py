@@ -1,14 +1,18 @@
+__author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
+
 import logging.config
-import sys
 import queue
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, thread as futures_thread
 from urllib import parse as urlparse
 import traceback
 
 import requests
-from lxml import etree, html as lhtml
+from lxml import html as lhtml
+
+from django.core.management.base import BaseCommand
+
+from trains.models import Region, Direction, Station
 
 
 logger = logging.getLogger(__name__)
@@ -18,11 +22,16 @@ logger = logging.getLogger(__name__)
 def _worker(executor_reference, work_queue):
     try:
         while True:
+            print(threading.current_thread().name, 'Trying to get a work item')
             work_item = work_queue.get(block=True)
             if work_item is not None:
+                print(threading.current_thread().name, 'Got an work item', work_item.fn)
                 work_item.run()
+                del work_item  # backport from 3.4
+                print(threading.current_thread().name, 'Task done')
                 work_queue.task_done()  # <-- added this line
                 continue
+            print(threading.current_thread().name, 'No work item for now')
             executor = executor_reference()
             # Exit if:
             #   - The interpreter is shutting down OR
@@ -49,28 +58,30 @@ class Downloader():
             queue_max_size = max_workers * 2 + 1
         self.executor._work_queue = queue.Queue(queue_max_size)
 
-    @property
-    def unfinished_task_counts(self):
+    def get_unfinished_tasks_count(self):
         return self.executor._work_queue.unfinished_tasks
 
     def do_request(self, session, method, url, *args, callback=None, errback=None, **kwargs):
         assert callback or errback, 'A callback must be specified'
 
         def request_done(_future):
-            logger.debug('Request done in thread %s', threading.current_thread())
+            logger.debug('%s Request done %s %s', threading.current_thread().name, method, url)
             exc = _future.exception()
             if exc:
                 logger.error('There was an exception: %s\n%s',
                              exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
                 if errback:
-                    errback(session, exc)
+                    # put callback to worker queue - to be run later
+                    self.executor.submit(errback, session, exc)
             else:
                 if callback:
-                    callback(session, _future.result())
+                    # put callback to worker queue - to be run later
+                    print(threading.current_thread().name, 'Schedule callback', callback)
+                    self.executor.submit(callback, session, _future.result())
 
         # the queue may be full, so the next call will block until the queue gets some room
         future = self.executor.submit(session.request, method, url, *args, **kwargs)
-        logger.debug('do_request in thread %s: %s %s', threading.current_thread(), method, url)
+        logger.debug('%s do_request %s %s', threading.current_thread().name, method, url)
         future.add_done_callback(request_done)
         # time.sleep(self.download_delay)
 
@@ -104,12 +115,10 @@ class Form():
             nodes = root.xpath(form_xpath)
             if nodes:
                 el = nodes[0]
-                while True:
+                while el is not None:
                     if el.tag == 'form':
                         return el
                     el = el.getparent()
-                    if el is None:
-                        break
             raise ValueError('No <form> element found with %s' % form_xpath)
 
         # If we get here, it means that either formname was None or invalid
@@ -126,9 +135,8 @@ class Form():
         params, data = self.fields, None
         if self.method.lower() != 'get':
             data, params = params, None
-        downloader.do_request(
-            session, self.method, self.action, callback=callback, errback=errback, params=params,
-            data=data)
+        downloader.do_request(session, self.method, self.action, params=params, data=data,
+                              callback=callback, errback=errback, )
 
 
 # passing session, item and other objects as arguments to callbacks makes code thread-safer
@@ -144,6 +152,8 @@ class Spider():
         self.downloader = Downloader(self.max_workers)
 
     def start(self):
+        """Start the spider.
+        """
         def start_requests():
             for url in self.start_urls:
                 self.start_request(url)
@@ -158,76 +168,92 @@ class Spider():
         html = lhtml.document_fromstring(response.content)
         directions = html.xpath('//div[@class="b-choose-geo"]/ul/li/a')
         for direction in directions:
-            direction_name = direction.xpath('./text()')[0]
             direction_url = direction.xpath('./@href')[0]
             if 'direction=_unknown' in direction_url:
                 continue
             direction_url = urlparse.urljoin(response.url, direction_url)
-            print('Found a direction: %s (%s)' % (direction_name, direction_url))
-            item = {'direction_name': direction_name}
-            self.downloader.do_request(
-                session, 'GET', direction_url,
-                callback=lambda session, response, item=item: self.parse_direction(
-                    session, response, item))
-            return
+            direction_name = direction.xpath('./text()')[0]
+            # if 'горьковское' not in direction_name.lower():
+            #     continue
+            self.downloader.do_request(session, 'GET', direction_url,
+                                       callback=self.parse_direction)
+            # return
 
-    def parse_direction(self, session, response, item):
+    def parse_direction(self, session, response):
         html = lhtml.document_fromstring(response.content)
+
+        direction = html.xpath('//select[@id="id_direction"]/option[@selected]')[0]
+        direction_name = direction.xpath('./text()')[0]
+        direction_id = direction.xpath('./@value')[0]
+
         route_form = Form(response.url, html, form_name='web')
         route_form.fields['mode'] = 'all'
+
         stations = html.xpath('//select[@id="id_station_from"]/option')
         for station_no, station in enumerate(stations):
             station_id = int(station.xpath('./@value')[0])
-            _item = item.copy()
-            _item.update({
-                'station_name': station.xpath('./text()')[0],
+            if not station_id:
+                continue  # separator
+            station_name = station.xpath('./text()')[0]
+            station_item = {
+                'direction_name': direction_name,
+                'direction_id': direction_id,
+                'station_name': station_name,
                 'station_id': station_id,
-            })
-            self.collected_stations.put(_item)
+            }
+            self.collected_stations.put(station_item)
 
             if station_no > 0 and station_id:
                 route_form.fields['station_to'] = station_id
                 route_form.submit(session, self.downloader, callback=self.parse_route)
-                return
+                # return
 
     def parse_route(self, session, response):
-        import ipdb; from pprint import pprint; ipdb.set_trace()
+        print('parse_route', response.url)
         pass
 
 
-LOGGING_CFG = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'standard': {
-            'format': '%(asctime)s.%(msecs).03d [%(levelname)s] %(name)s: %(message)s',
-            'datefmt': '%H:%M:%S',
-        },
-    },
-    'handlers': {
-        'console': {
-            'level': 'DEBUG',
-            'class': 'logging.StreamHandler',
-            'formatter': 'standard',
-        },
-    },
-    'loggers': {
-        __name__: {
-            'handlers': ['console'],
-            'level': 'DEBUG',
-        },
-    }
-}
-logging.config.dictConfig(LOGGING_CFG)
+class Command(BaseCommand):
 
+    help = ''
 
-spider = Spider()
-spider.start()
+    def handle(self, **options):
 
-logger.debug('Waiting for the items')
-while spider.downloader.unfinished_task_counts or not spider.collected_stations.empty():
-    try:
-        item = spider.collected_stations.get(timeout=0.25)
-    except queue.Empty:
-        continue
-    print('Station: {direction_name}, {station_name} ({station_id})'.format(**item), id(item))
+        spider = Spider()
+        spider.start()
+
+        # Region.objects.all().delete()
+        # Direction.objects.all().delete()
+        # Station.objects.all().delete()
+        #
+        # moscow_region = Region.objects.create(id=215, name='Москва')
+
+        # logger.debug('Waiting for stations')
+        # while (spider.downloader.get_unfinished_tasks_count()
+        #        or not spider.collected_stations.empty()):
+        #     try:
+        #         item = spider.collected_stations.get(timeout=0.25)
+        #     except queue.Empty:
+        #         print('unfinished_tasks_count', spider.downloader.get_unfinished_tasks_count(),
+        #               threading.current_thread().name)
+        #         continue
+        #     # direction = Direction.objects.filter(id=item['direction_id']).first()
+        #     # if direction is None:
+        #     #     direction = Direction.objects.create(
+        #     #         id=item['direction_id'], name=item['direction_name'], region=moscow_region)
+        #     # else:
+        #     #     assert direction.name == item['direction_name'], '%r != %r' % (
+        #     #         direction.name, item['direction_name'])
+        #     #
+        #     # station = Station.objects.filter(id=item['station_id']).first()
+        #     # if station is None:
+        #     #     station = Station.objects.create(
+        #     #         id=item['station_id'], name=item['station_name'])
+        #     # else:
+        #     #     assert station.name == item['station_name'], '%r != %r' % (
+        #     #         station.name, item['station_name'])
+        #     # station.directions.add(direction)
+        #
+        #     print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
+        import time
+        time.sleep(30)

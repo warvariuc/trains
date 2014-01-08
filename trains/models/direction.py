@@ -6,6 +6,8 @@ from . import Region
 class Direction(models.Model):
     """Направление (Белорусское, Горьковское, Рижское, ...)
     """
+    id = models.CharField(max_length=50, verbose_name='Яндекс-индекс направления',
+                          primary_key=True)
     name = models.CharField(max_length=255, verbose_name='Наименование направления')
     region = models.ForeignKey(Region)
 
