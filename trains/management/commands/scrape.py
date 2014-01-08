@@ -1,11 +1,11 @@
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
 import logging.config
+from urllib import parse as urlparse
+import traceback
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor, thread as futures_thread
-from urllib import parse as urlparse
-import traceback
 
 import requests
 from lxml import html as lhtml
@@ -48,54 +48,35 @@ def _worker(executor_reference, work_queue):
 futures_thread._worker = _worker
 
 
-class Downloader():
+class Request():
+    """A proxy to
     """
-    """
-    def __init__(self, max_workers, queue_max_size=None):
-        self.executor = ThreadPoolExecutor(max_workers)
-        # limit work queue size: http://bugs.python.org/issue14119
-        if queue_max_size is None:
-            queue_max_size = max_workers * 2 + 1
-        self.executor._work_queue = queue.Queue(queue_max_size)
-
-    def get_unfinished_tasks_count(self):
-        return self.executor._work_queue.unfinished_tasks
-
-    def do_request(self, session, method, url, *args, callback=None, errback=None, **kwargs):
+    def __init__(self, session, method, url, *args, callback=None, errback=None, **kwargs):
         assert callback or errback, 'A callback must be specified'
-
-        def request_done(_future):
-            logger.debug('%s Request done %s %s', threading.current_thread().name, method, url)
-            exc = _future.exception()
-            if exc:
-                logger.error('There was an exception: %s\n%s',
-                             exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
-                if errback:
-                    # put callback to worker queue - to be run later
-                    self.executor.submit(errback, session, exc)
-            else:
-                if callback:
-                    # put callback to worker queue - to be run later
-                    print(threading.current_thread().name, 'Schedule callback', callback)
-                    self.executor.submit(callback, session, _future.result())
-
-        # the queue may be full, so the next call will block until the queue gets some room
-        future = self.executor.submit(session.request, method, url, *args, **kwargs)
-        logger.debug('%s do_request %s %s', threading.current_thread().name, method, url)
-        future.add_done_callback(request_done)
-        # time.sleep(self.download_delay)
-
-        return future
+        self.session = session
+        self.method = method
+        self.url = url
+        self.args = (method, url) + args
+        self.kwargs = kwargs
+        self.callback = callback
+        self.errback = errback
 
 
 class Form():
     """
     """
-    def __init__(self, url, html_doc, form_name='', form_number=0, form_xpath=''):
-        form = self._find_form_(html_doc, form_name, form_number, form_xpath)
+    def __init__(self, response_html_doc, form_name='', form_number=0, form_xpath=''):
+        form = self._find_form_(response_html_doc, form_name, form_number, form_xpath)
         self.method = form.method
-        self.action = urlparse.urljoin(url, form.action)
+        self.action = form.action
         self.fields = dict(form.form_values())
+
+    def to_request(self, response_url, session, **kwargs):
+        action = urlparse.urljoin(response_url, self.action)
+        params, data = self.fields, None
+        if self.method.lower() != 'get':
+            data, params = params, None
+        return Request(session, self.method, action, params=params, data=data, **kwargs)
 
     # https://github.com/scrapy/scrapy/blob/master/scrapy/http/request/form.py
     def _find_form_(self, root, form_name, form_number, form_xpath):
@@ -130,42 +111,44 @@ class Form():
             else:
                 return form
 
-    def submit(self, session, downloader, callback=None, errback=None):
-        assert isinstance(downloader, Downloader)
-        params, data = self.fields, None
-        if self.method.lower() != 'get':
-            data, params = params, None
-        downloader.do_request(session, self.method, self.action, params=params, data=data,
-                              callback=callback, errback=errback, )
+
+class Downloader():
+    """
+    """
+    def __init__(self, max_workers, queue_max_size=None):
+        self.executor = ThreadPoolExecutor(max_workers)
+        # limit work queue size: http://bugs.python.org/issue14119
+        if queue_max_size is None:
+            queue_max_size = max_workers * 2 + 1
+        self.executor._work_queue = queue.Queue(queue_max_size)
+
+    def get_unfinished_tasks_count(self):
+        return self.executor._work_queue.unfinished_tasks
+
+    def send_request(self, request):
+        assert isinstance(request, Request)
+
+        # the queue may be full, so the next call will block until the queue gets some room
+        future = self.executor.submit(request.session.request, *request.args, **request.kwargs)
+        # logger.debug('%s do_request %s %s', threading.current_thread().name, method, url)
+        # time.sleep(self.download_delay)
+        return future
 
 
-# passing session, item and other objects as arguments to callbacks makes code thread-safer
 class Spider():
     """
     """
     start_urls = ['http://m.rasp.yandex.ru/direction?city=213']
     download_delay = 0.5  # seconds
     max_workers = 5
-    collected_stations = queue.Queue()
 
-    def __init__(self):
-        self.downloader = Downloader(self.max_workers)
-
-    def start(self):
-        """Start the spider.
-        """
-        def start_requests():
-            for url in self.start_urls:
-                self.start_request(url)
-        logger.debug('Starting spider requests')
-        self.downloader.executor.submit(start_requests)
-
-    def start_request(self, url):
-        session = requests.Session()
-        self.downloader.do_request(session, 'GET', url, callback=self.parse)
+    def start_requests(self):
+        for url in self.start_urls:
+            session = requests.Session()
+            yield Request(session, 'GET', url, callback=self.parse)
 
     def parse(self, session, response):
-        html = lhtml.document_fromstring(response.content)
+        html = lhtml.fromstring(response.content)
         directions = html.xpath('//div[@class="b-choose-geo"]/ul/li/a')
         for direction in directions:
             direction_url = direction.xpath('./@href')[0]
@@ -175,18 +158,17 @@ class Spider():
             direction_name = direction.xpath('./text()')[0]
             # if 'горьковское' not in direction_name.lower():
             #     continue
-            self.downloader.do_request(session, 'GET', direction_url,
-                                       callback=self.parse_direction)
+            yield Request(session, 'GET', direction_url, callback=self.parse_direction)
             # return
 
     def parse_direction(self, session, response):
-        html = lhtml.document_fromstring(response.content)
+        html = lhtml.fromstring(response.content)
 
         direction = html.xpath('//select[@id="id_direction"]/option[@selected]')[0]
         direction_name = direction.xpath('./text()')[0]
         direction_id = direction.xpath('./@value')[0]
 
-        route_form = Form(response.url, html, form_name='web')
+        route_form = Form(html, form_name='web')
         route_form.fields['mode'] = 'all'
 
         stations = html.xpath('//select[@id="id_station_from"]/option')
@@ -201,16 +183,36 @@ class Spider():
                 'station_name': station_name,
                 'station_id': station_id,
             }
-            self.collected_stations.put(station_item)
+            yield station_item
 
             if station_no > 0 and station_id:
                 route_form.fields['station_to'] = station_id
-                route_form.submit(session, self.downloader, callback=self.parse_route)
+                yield route_form.to_request(response.url, session, callback=self.parse_route)
                 # return
 
     def parse_route(self, session, response):
         print('parse_route', response.url)
         pass
+
+
+class Pipeline():
+    def process_item(self, item):
+        print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
+
+
+def on_request_done(_future, request):
+    # logger.debug('%s Request done %s %s', threading.current_thread().name, method, url)
+    assert isinstance(request, Request)
+    exc = _future.exception()
+    if exc:
+        logger.error('There was an exception: %s\n%s',
+                     exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
+        if request.errback:
+            request.errback(request.session, exc)
+    else:
+        if request.callback:
+            request.callback(request.session, _future.result())
+
 
 
 class Command(BaseCommand):
@@ -219,8 +221,20 @@ class Command(BaseCommand):
 
     def handle(self, **options):
 
+        downloader = Downloader(5)
         spider = Spider()
-        spider.start()
+        pipeline = Pipeline()
+
+        for obj in spider.start_requests():
+            if isinstance(obj, Request):
+                future = downloader.send_request(obj)
+                future.add_done_callback(lambda _future: on_request_done(_future, obj))
+            elif isinstance(obj, dict):
+                # it's an item
+                pipeline.process_item(obj)
+            else:
+                raise TypeError('Expected a Request or a dict instance')
+
 
         # Region.objects.all().delete()
         # Direction.objects.all().delete()
@@ -255,5 +269,3 @@ class Command(BaseCommand):
         #     # station.directions.add(direction)
         #
         #     print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
-        import time
-        time.sleep(30)
