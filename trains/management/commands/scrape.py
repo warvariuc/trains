@@ -24,16 +24,12 @@ logger = logging.getLogger(__name__)
 def _worker(executor_reference, work_queue):
     try:
         while True:
-            # print(threading.current_thread().name, 'Trying to get a work item')
             work_item = work_queue.get(block=True)
             if work_item is not None:
-                # print(threading.current_thread().name, 'Got an work item', work_item.fn)
                 work_item.run()
                 del work_item  # backport from 3.4
-                # print(threading.current_thread().name, 'Task done')
                 work_queue.task_done()  # <-- added this line
                 continue
-            # print(threading.current_thread().name, 'No work item for now')
             executor = executor_reference()
             # Exit if:
             #   - The interpreter is shutting down OR
@@ -117,29 +113,105 @@ class Form():
 class Downloader():
     """
     """
-    download_delay = 0.1
-
-    def __init__(self, max_workers, queue_max_size=None):
+    def __init__(self, max_workers, download_delay):
+        assert isinstance(download_delay, (int, float))
         self._executor = ThreadPoolExecutor(max_workers)
         self.response_queue = queue.Queue()
         self._last_request_time = 0
+        self.download_delay = download_delay
+        self.request_count = 0
+        self.total_request_time = 0.0
+        self.lock = threading.Lock()
+
+    def get_unfinished_requests_count(self):
+        return self._executor._work_queue.unfinished_tasks
 
     def enqueue_request(self, request):
         assert isinstance(request, Request)
 
         now = time.time()
         if now - self._last_request_time < self.download_delay:
-            # the request was not scheduled - please come later
+            # the request was not scheduled - please come later, you are coming too fast
             return None
         self._last_request_time = now
 
+        def do_request(_request=request):
+            start_time = time.time()
+            result = _request.session.request(*_request.args, **_request.kwargs)
+            with self.lock:
+                self.request_count += 1
+                self.total_request_time += time.time() - start_time
+            return result
+
         # the queue may be full, so the next call will block until the queue gets some room
-        future = self._executor.submit(request.session.request, *request.args, **request.kwargs)
-        logger.debug('%s send_request %s %s',
-                     threading.current_thread().name, request.method, request.url)
-        future.add_done_callback(lambda _future: self.response_queue.put((request, _future)))
-        time.sleep(self.download_delay)
+        future = self._executor.submit(do_request)
+
+        def on_request_done(_future, _request=request):
+            self.response_queue.put((_request, _future))
+
+        future.add_done_callback(on_request_done)
         return future
+
+
+class SpiderEngine():
+    """
+    """
+    def __init__(self, spider, pipeline, downloader):
+        self.spider = spider
+        self.pipeline = pipeline
+        self.downloader = downloader
+
+    def start(self):
+
+        callback_results = []  # cumulative results from all callbacks
+        _callback_results = self.spider.start_requests()
+        obj = None
+
+        while True:
+            if _callback_results:
+                callback_results = itertools.chain(iter(_callback_results), callback_results)
+                _callback_results = []
+
+            future = None
+            try:
+                # use previously unused object or get a new one
+                if obj is None:
+                    obj = next(callback_results)  # request or item
+            except StopIteration:
+                pass
+            else:
+                if isinstance(obj, Request):
+                    # try to schedule a request
+                    future = self.downloader.enqueue_request(obj)
+                    if future is not None:
+                        # the request was successfully enqueued - do not try again
+                        obj = None
+                elif isinstance(obj, dict):  # it's an item
+                    self.pipeline.process_item(obj)
+                    obj = None
+                    continue  # processing items is a priority
+                else:
+                    raise TypeError('Expected a Request or a dict instance')
+
+            try:
+                # if a request was successfully schedules do not wait much for an item
+                # to take the next obj from callback ASAP
+                timeout = 0.0 if future is not None else 0.01
+                request, future = self.downloader.response_queue.get(timeout=timeout)
+            except queue.Empty:
+                if not obj and not self.downloader.get_unfinished_requests_count():
+                    # no more scheduled requests and objects from callbacks
+                    break  # the spider finished its work
+            else:
+                exc = future.exception()
+                if exc:
+                    # logger.error('There was an exception: %s\n%s',
+                    #              exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
+                    if request.errback:
+                        _callback_results = request.errback(exc, request.session, request)
+                else:
+                    if request.callback:
+                        _callback_results = request.callback(request.session, future.result())
 
 
 class Spider():
@@ -161,10 +233,10 @@ class Spider():
                 continue
             direction_url = urlparse.urljoin(response.url, direction_url)
             direction_name = direction.xpath('./text()')[0]
-            if 'горьковское' not in direction_name.lower():
-                 continue
+            # if 'горьковское' not in direction_name.lower():
+            #     continue
             yield Request(session, 'GET', direction_url, callback=self.parse_direction)
-            return
+            # return
 
     def parse_direction(self, session, response):
         html = lhtml.fromstring(response.content)
@@ -200,67 +272,14 @@ class Spider():
         pass
 
 
-class SpiderEngine():
-    """
-    """
-    def __init__(self, spider, pipeline, downloader):
-        self.spider = spider
-        self.pipeline = pipeline
-        self.downloader = downloader
-
-    def start(self):
-
-        callback_results = []  # cumulative results from all callbacks
-        _callback_results = self.spider.start_requests()
-        obj = None
-
-        while True:
-            if _callback_results:
-                callback_results = itertools.chain(iter(_callback_results), callback_results)
-                _callback_results = []
-
-            try:
-                # use previously unused object or get a new one
-                obj = obj or next(callback_results)  # request or item
-            except StopIteration:
-                pass
-            else:
-                if isinstance(obj, Request):
-                    # try to schedule a request
-                    future = self.downloader.enqueue_request(obj)
-                    if future is not None:
-                        # the request was successfully enqueued
-                        obj = None
-                elif isinstance(obj, dict):
-                    # it's an item
-                    self.pipeline.process_item(obj)
-                    obj = None
-                    continue  # prcessing items is a priority
-                else:
-                    raise TypeError('Expected a Request or a dict instance')
-
-            try:
-                request, future = self.downloader.response_queue.get(timeout=0.01)
-            except queue.Empty:
-                pass
-            else:
-                logger.debug('%s Request done %s %s',
-                             threading.current_thread().name, request.method, request.url)
-                exc = future.exception()
-                if exc:
-                    logger.error('There was an exception: %s\n%s',
-                                 exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
-                    if request.errback:
-                        _callback_results = request.errback(exc, request.session, request)
-                else:
-                    if request.callback:
-                        _callback_results = request.callback(request.session, future.result())
-
-
 class Pipeline():
     """
     """
+    def __init__(self):
+        self.item_count = 0
+
     def process_item(self, item):
+        self.item_count += 1
         print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
 
 
@@ -270,12 +289,27 @@ class Command(BaseCommand):
 
     def handle(self, **options):
 
+        downloader = Downloader(5, 0.0)
+        pipeline = Pipeline()
         spider_engine = SpiderEngine(
             spider=Spider(),
-            pipeline=Pipeline(),
-            downloader=Downloader(5)
+            pipeline=pipeline,
+            downloader=downloader
         )
+
+        start_time = time.time()
+
         spider_engine.start()
+
+        total_time = time.time() - start_time
+        print('Total time: {:.1f} seconds'.format(total_time))
+        total_requests = downloader.request_count
+        total_request_time = downloader.total_request_time
+        print('Total request count: {:d}'.format(total_requests))
+        print('Cumulative request time: {:.1f} seconds'.format(total_request_time))
+        print('Average request time: {:.2f} seconds'.format(total_request_time / total_requests))
+        print('Requests per second: {:.2f}'.format(total_requests / total_time))
+        print('Items scraped: {:d}'.format(pipeline.item_count))
 
         # Region.objects.all().delete()
         # Direction.objects.all().delete()
