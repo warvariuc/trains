@@ -46,7 +46,7 @@ def _worker(executor_reference, work_queue):
 futures_thread._worker = _worker
 
 
-class Request():
+class RequestWrapper():
     """A proxy to
     """
     def __init__(self, session, method, url, *args, callback=None, errback=None, **kwargs):
@@ -70,11 +70,15 @@ class Form():
         self.fields = dict(form.form_values())
 
     def to_request(self, response_url, session, **kwargs):
+        """Create a request for the form submission.
+        @param response_url: base url for a relative `action` of the form
+        @param session: seesion to use fot the request
+        """
         action = urlparse.urljoin(response_url, self.action)
-        params, data = self.fields, None
+        params, data = self.fields.copy(), None
         if self.method.lower() != 'get':
             data, params = params, None
-        return Request(session, self.method, action, params=params, data=data, **kwargs)
+        return RequestWrapper(session, self.method, action, params=params, data=data, **kwargs)
 
     # https://github.com/scrapy/scrapy/blob/master/scrapy/http/request/form.py
     def _find_form_(self, root, form_name, form_number, form_xpath):
@@ -127,7 +131,7 @@ class Downloader():
         return self._executor._work_queue.unfinished_tasks
 
     def enqueue_request(self, request):
-        assert isinstance(request, Request)
+        assert isinstance(request, RequestWrapper)
 
         now = time.time()
         if now - self._last_request_time < self.download_delay:
@@ -136,6 +140,8 @@ class Downloader():
         self._last_request_time = now
 
         def do_request(_request=request):
+            """Send a request in a worker thread.
+            """
             start_time = time.time()
             result = _request.session.request(*_request.args, **_request.kwargs)
             with self.lock:
@@ -143,7 +149,6 @@ class Downloader():
                 self.total_request_time += time.time() - start_time
             return result
 
-        # the queue may be full, so the next call will block until the queue gets some room
         future = self._executor.submit(do_request)
 
         def on_request_done(_future, _request=request):
@@ -180,7 +185,7 @@ class SpiderEngine():
             except StopIteration:
                 pass
             else:
-                if isinstance(obj, Request):
+                if isinstance(obj, RequestWrapper):
                     # try to schedule a request
                     future = self.downloader.enqueue_request(obj)
                     if future is not None:
@@ -222,7 +227,7 @@ class Spider():
     def start_requests(self):
         for url in self.start_urls:
             session = requests.Session()
-            yield Request(session, 'GET', url, callback=self.parse)
+            yield RequestWrapper(session, 'GET', url, callback=self.parse)
 
     def parse(self, session, response):
         html = lhtml.fromstring(response.content)
@@ -235,7 +240,7 @@ class Spider():
             direction_name = direction.xpath('./text()')[0]
             # if 'горьковское' not in direction_name.lower():
             #     continue
-            yield Request(session, 'GET', direction_url, callback=self.parse_direction)
+            yield RequestWrapper(session, 'GET', direction_url, callback=self.parse_direction)
             # return
 
     def parse_direction(self, session, response):
