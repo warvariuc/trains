@@ -1,3 +1,10 @@
+"""
+Simple spider inspider by Scrapy.
+Spiders, pipelines and everyting except downloader workers are running in the main thread.
+There is no need to care about thread-safety in user code.
+Tested on Python 3.3
+"""
+__version__ = '0.3.0'
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
 import logging.config
@@ -47,9 +54,10 @@ futures_thread._worker = _worker
 
 
 class RequestWrapper():
-    """A proxy to
+    """Wrapper around requests.Request
     """
-    def __init__(self, session, method, url, *args, callback=None, errback=None, **kwargs):
+    def __init__(self, session, method, url, *args, callback=None, errback=None, meta=None,
+                 **kwargs):
         assert callback or errback, 'A callback must be specified'
         self.session = session
         self.method = method
@@ -58,29 +66,53 @@ class RequestWrapper():
         self.kwargs = kwargs
         self.callback = callback
         self.errback = errback
+        self.meta = (meta or {}).copy()
+
+
+class ResponseWrapper():
+    """Wrapper around requests.Response
+    """
+    def __init__(self, response, request_wrapper):
+        assert isinstance(response, requests.Response)
+        assert isinstance(request_wrapper, RequestWrapper)
+        self.response = response
+        self.request_wrapper = request_wrapper
+        self.session = request_wrapper.session
+        self.meta = request_wrapper.meta.copy()
+
+    @property
+    def html_doc(self):
+        """Get lxml node of the response body and cache it.
+        """
+        html_doc = lhtml.fromstring(self.response.content)
+        self.__dict__['html_doc'] = html_doc  # memoize
+        return html_doc
 
 
 class Form():
     """
     """
-    def __init__(self, response_html_doc, form_name='', form_number=0, form_xpath=''):
-        form = self._find_form_(response_html_doc, form_name, form_number, form_xpath)
+    def __init__(self, response_wrapper, form_name='', form_number=0, form_xpath=''):
+        assert isinstance(response_wrapper, ResponseWrapper)
+        self.response_wrapper = response_wrapper
+        form = self._find_form_(response_wrapper.html_doc, form_name, form_number, form_xpath)
         self.method = form.method
         self.action = form.action
         self.fields = dict(form.form_values())
 
-    def to_request(self, response_url, session, **kwargs):
+    def to_request(self, **kwargs):
         """Create a request for the form submission.
         @param response_url: base url for a relative `action` of the form
         @param session: seesion to use fot the request
         """
-        action = urlparse.urljoin(response_url, self.action)
+        action = urlparse.urljoin(self.response_wrapper.response.url, self.action)
         params, data = self.fields.copy(), None
         if self.method.lower() != 'get':
             data, params = params, None
-        return RequestWrapper(session, self.method, action, params=params, data=data, **kwargs)
+        return RequestWrapper(self.response_wrapper.session, self.method, action, params=params,
+                              data=data, **kwargs)
 
-    # https://github.com/scrapy/scrapy/blob/master/scrapy/http/request/form.py
+    # mostly copied from https://github.com/scrapy/scrapy/blob/master/scrapy/http/request/form.py
     def _find_form_(self, root, form_name, form_number, form_xpath):
         """Find the form element
         """
@@ -130,8 +162,8 @@ class Downloader():
     def get_unfinished_requests_count(self):
         return self._executor._work_queue.unfinished_tasks
 
-    def enqueue_request(self, request):
-        assert isinstance(request, RequestWrapper)
+    def enqueue_request(self, request_wrapper):
+        assert isinstance(request_wrapper, RequestWrapper)
 
         now = time.time()
         if now - self._last_request_time < self.download_delay:
@@ -139,11 +171,12 @@ class Downloader():
             return None
         self._last_request_time = now
 
-        def do_request(_request=request):
+        def do_request(_request_wrapper=request_wrapper):
             """Send a request in a worker thread.
             """
             start_time = time.time()
-            result = _request.session.request(*_request.args, **_request.kwargs)
+            result = _request_wrapper.session.request(*_request_wrapper.args,
+                                                      **_request_wrapper.kwargs)
             with self.lock:
                 self.request_count += 1
                 self.total_request_time += time.time() - start_time
@@ -151,8 +184,8 @@ class Downloader():
 
         future = self._executor.submit(do_request)
 
-        def on_request_done(_future, _request=request):
-            self.response_queue.put((_request, _future))
+        def on_request_done(_future, _request_wrapper=request_wrapper):
+            self.response_queue.put((_request_wrapper, _future))
 
         future.add_done_callback(on_request_done)
         return future
@@ -202,59 +235,108 @@ class SpiderEngine():
                 # if a request was successfully schedules do not wait much for an item
                 # to take the next obj from callback ASAP
                 timeout = 0.0 if future is not None else 0.01
-                request, future = self.downloader.response_queue.get(timeout=timeout)
+                request_wrapper, future = self.downloader.response_queue.get(timeout=timeout)
             except queue.Empty:
                 if not obj and not self.downloader.get_unfinished_requests_count():
                     # no more scheduled requests and objects from callbacks
-                    break  # the spider finished its work
+                    break  # the spider has finished its work
             else:
                 exc = future.exception()
                 if exc:
-                    # logger.error('There was an exception: %s\n%s',
-                    #              exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
-                    if request.errback:
-                        _callback_results = request.errback(exc, request.session, request)
+                    logger.error('There was an exception: %s\n%s',
+                                 exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
+                    if request_wrapper.errback:
+                        _callback_results = request_wrapper.errback(exc, request_wrapper)
                 else:
-                    if request.callback:
-                        _callback_results = request.callback(request.session, future.result())
+                    if request_wrapper.callback:
+                        response_wrapper = ResponseWrapper(
+                            response=future.result(),
+                            request_wrapper=request_wrapper)
+                        _callback_results = request_wrapper.callback(response_wrapper)
 
 
 class Spider():
+    """Base spider.
     """
-    """
-    start_urls = ['http://m.rasp.yandex.ru/direction?city=213']
+    start_urls = ()
 
     def start_requests(self):
         for url in self.start_urls:
             session = requests.Session()
             yield RequestWrapper(session, 'GET', url, callback=self.parse)
 
-    def parse(self, session, response):
-        html = lhtml.fromstring(response.content)
-        directions = html.xpath('//div[@class="b-choose-geo"]/ul/li/a')
-        for direction in directions:
-            direction_url = direction.xpath('./@href')[0]
+    def parse(self, response_wrapper):
+        raise NotImplementedError('Override this method in your subclasses.')
+
+
+class UrlFingerprints():
+
+    def __init__(self):
+        self.fingerprints = set()
+
+    def add(self, url):
+        """Add URL to the fingerprint store. Returns True if the URL fingerprint was successfully
+        added. Return False if fingerprint if the URL is already in the store.
+        """
+        fingerprint = self.calculate_fingerprint(url)
+        if fingerprint in self.fingerprints:
+            return False
+        self.fingerprints.add(fingerprint)
+        return True
+
+    def calculate_fingerprint(self, url):
+        return self.canonicalize_url(url)
+
+    def canonicalize_url(self, url, keep_blank_values=True, keep_fragments=False):
+        """Canonicalize the given url.
+        """
+        scheme, netloc, path, params, query, fragment = urlparse.urlparse(url)
+        query = urlparse.urlencode(sorted(urlparse.parse_qsl(query, keep_blank_values)))
+        if not keep_fragments:
+            fragment = ''
+        return urlparse.urlunparse((scheme, netloc.lower(), path, params, query, fragment))
+
+
+class RouteUrlFingerprints(UrlFingerprints):
+    """
+    """
+    def calculate_fingerprint(self, url):
+        return urlparse.urlparse(url).path
+
+
+class TrainsSpider(Spider):
+    """Spider to scrape electrical train data from Yandex.
+    """
+    start_urls = ['http://m.rasp.yandex.ru/direction?city=213']
+
+    def __init__(self, *args, **kwargs):
+        super(TrainsSpider, self).__init__(*args, **kwargs)
+        self.route_url_fps = RouteUrlFingerprints()
+
+    def parse(self, response_wrapper):
+        html_doc = response_wrapper.html_doc
+        direction_nodes = html_doc.xpath('//div[@class="b-choose-geo"]/ul/li/a')
+        for direction_node in direction_nodes:
+            direction_url = direction_node.xpath('./@href')[0]
             if 'direction=_unknown' in direction_url:
                 continue
-            direction_url = urlparse.urljoin(response.url, direction_url)
-            direction_name = direction.xpath('./text()')[0]
+            direction_url = urlparse.urljoin(response_wrapper.response.url, direction_url)
+            # direction_name = direction_node.xpath('./text()')[0]
             # if 'горьковское' not in direction_name.lower():
             #     continue
-            yield RequestWrapper(session, 'GET', direction_url, callback=self.parse_direction)
-            # return
+            yield RequestWrapper(response_wrapper.session, 'GET', direction_url,
+                                 callback=self.parse_direction)
 
-    def parse_direction(self, session, response):
-        html = lhtml.fromstring(response.content)
+    def parse_direction(self, response_wrapper):
+        html_doc = response_wrapper.html_doc
 
-        direction = html.xpath('//select[@id="id_direction"]/option[@selected]')[0]
+        direction = html_doc.xpath('//select[@id="id_direction"]/option[@selected]')[0]
         direction_name = direction.xpath('./text()')[0]
         direction_id = direction.xpath('./@value')[0]
 
-        route_form = Form(html, form_name='web')
-        route_form.fields['mode'] = 'all'
-
-        stations = html.xpath('//select[@id="id_station_from"]/option')
-        for station_no, station in enumerate(stations):
+        stations = []
+        station_nodes = html_doc.xpath('//select[@id="id_station_to"]/option')
+        for station_no, station in enumerate(station_nodes):
             station_id = int(station.xpath('./@value')[0])
             if not station_id:
                 continue  # separator
@@ -265,16 +347,34 @@ class Spider():
                 'station_name': station_name,
                 'station_id': station_id,
             }
-            yield station_item
+            # yield station_item
+            stations.append((station_id, station_name))
 
-            if station_no > 0 and station_id:
-                route_form.fields['station_to'] = station_id
-                yield route_form.to_request(response.url, session, callback=self.parse_route)
-                # return
+        route_form = Form(response_wrapper, form_name='web')
+        station_from_id, station_from_name = stations[0]
+        route_form.fields['station_from'] = station_from_id
+        route_form.fields['mode'] = 'all'
+        # for station_to_id, station_to_name in stations[1:3]:
+        for station_to_id, station_to_name in stations[1:]:
+            if not station_to_id:
+                continue
+            route_form.fields['station_to'] = station_to_id
+            # logger.info('%s -> %s', station_from_name, station_to_name)
+            yield route_form.to_request(callback=self.parse_route)
+            # return
 
-    def parse_route(self, session, response):
-        print('parse_route', response.url)
-        pass
+    def parse_route(self, response_wrapper):
+        # print(objgraph.show_growth(limit=3))
+        # import ipdb; from pprint import pprint; ipdb.set_trace()
+        html_doc = response_wrapper.html_doc
+        for route_node in html_doc.xpath('//span[@class="time"]/a/@href'):
+            route_url = str(route_node)
+            route_url = urlparse.urljoin(response_wrapper.response.url, route_url)
+            if self.route_url_fps.add(route_url):
+                route_urls.append(route_url)
+
+
+route_urls = []
 
 
 class Pipeline():
@@ -297,7 +397,7 @@ class Command(BaseCommand):
         downloader = Downloader(5, 0.0)
         pipeline = Pipeline()
         spider_engine = SpiderEngine(
-            spider=Spider(),
+            spider=TrainsSpider(),
             pipeline=pipeline,
             downloader=downloader
         )
@@ -315,6 +415,8 @@ class Command(BaseCommand):
         print('Average request time: {:.2f} seconds'.format(total_request_time / total_requests))
         print('Requests per second: {:.2f}'.format(total_requests / total_time))
         print('Items scraped: {:d}'.format(pipeline.item_count))
+
+        import ipdb; from pprint import pprint; ipdb.set_trace()
 
         # Region.objects.all().delete()
         # Direction.objects.all().delete()
