@@ -201,8 +201,10 @@ class SpiderEngine():
 
     def start(self):
 
-        callback_results = []  # cumulative results from all callbacks
+        self.pipeline.on_spider_started(self.spider)
+
         _callback_results = self.spider.start_requests()
+        callback_results = []  # cumulative results from all callbacks
         obj = None
 
         while True:
@@ -225,7 +227,7 @@ class SpiderEngine():
                         # the request was successfully enqueued - do not try again
                         obj = None
                 elif isinstance(obj, dict):  # it's an item
-                    self.pipeline.process_item(obj)
+                    self.pipeline.process_item(obj, self.spider)
                     obj = None
                     continue  # processing items is a priority
                 else:
@@ -254,6 +256,8 @@ class SpiderEngine():
                             request_wrapper=request_wrapper)
                         _callback_results = request_wrapper.callback(response_wrapper)
 
+        self.pipeline.on_spider_finished(self.spider)
+
 
 class Spider():
     """Base spider.
@@ -278,16 +282,16 @@ class UrlFingerprints():
         """Add URL to the fingerprint store. Returns True if the URL fingerprint was successfully
         added. Return False if fingerprint if the URL is already in the store.
         """
-        fingerprint = self.calculate_fingerprint(url)
+        fingerprint = self._calculate_fingerprint(url)
         if fingerprint in self.fingerprints:
             return False
         self.fingerprints.add(fingerprint)
         return True
 
-    def calculate_fingerprint(self, url):
-        return self.canonicalize_url(url)
+    def _calculate_fingerprint(self, url):
+        return self._canonicalize_url(url)
 
-    def canonicalize_url(self, url, keep_blank_values=True, keep_fragments=False):
+    def _canonicalize_url(self, url, keep_blank_values=True, keep_fragments=False):
         """Canonicalize the given url.
         """
         scheme, netloc, path, params, query, fragment = urlparse.urlparse(url)
@@ -300,7 +304,7 @@ class UrlFingerprints():
 class RouteUrlFingerprints(UrlFingerprints):
     """
     """
-    def calculate_fingerprint(self, url):
+    def _calculate_fingerprint(self, url):
         return urlparse.urlparse(url).path
 
 
@@ -347,14 +351,13 @@ class TrainsSpider(Spider):
                 'station_name': station_name,
                 'station_id': station_id,
             }
-            # yield station_item
+            yield station_item
             stations.append((station_id, station_name))
 
         route_form = Form(response_wrapper, form_name='web')
         station_from_id, station_from_name = stations[0]
         route_form.fields['station_from'] = station_from_id
         route_form.fields['mode'] = 'all'
-        # for station_to_id, station_to_name in stations[1:3]:
         for station_to_id, station_to_name in stations[1:]:
             if not station_to_id:
                 continue
@@ -364,8 +367,6 @@ class TrainsSpider(Spider):
             # return
 
     def parse_route(self, response_wrapper):
-        # print(objgraph.show_growth(limit=3))
-        # import ipdb; from pprint import pprint; ipdb.set_trace()
         html_doc = response_wrapper.html_doc
         for route_node in html_doc.xpath('//span[@class="time"]/a/@href'):
             route_url = str(route_node)
@@ -377,15 +378,54 @@ class TrainsSpider(Spider):
 route_urls = []
 
 
-class Pipeline():
+class ItemPipeline():
+    """Base item pipeline
+    """
+    def on_spider_started(self, spider):
+        pass
+
+    def on_spider_finished(self, spider):
+        pass
+
+    def process_item(self, item, spider):
+        pass
+
+
+class StationsPipeline(ItemPipeline):
     """
     """
     def __init__(self):
         self.item_count = 0
 
-    def process_item(self, item):
+        Region.objects.all().delete()
+        Direction.objects.all().delete()
+        Station.objects.all().delete()
+
+        self.moscow_region = Region.objects.create(id=215, name='Москва')
+
+    def process_item(self, item, spider):
         self.item_count += 1
         print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
+
+        direction = Direction.objects.filter(id=item['direction_id']).first()
+        if direction is None:
+            direction = Direction.objects.create(
+                id=item['direction_id'], name=item['direction_name'], region=self.moscow_region)
+        else:
+            assert direction.name == item['direction_name'], '%r != %r' % (
+                direction.name, item['direction_name'])
+
+        station = Station.objects.filter(id=item['station_id']).first()
+        if station is None:
+            station = Station.objects.create(
+                id=item['station_id'], name=item['station_name'])
+        else:
+            assert station.name == item['station_name'], '%r != %r' % (
+                station.name, item['station_name'])
+        station.directions.add(direction)
+
+    def on_spider_finished(self, spider):
+        pass
 
 
 class Command(BaseCommand):
@@ -395,7 +435,7 @@ class Command(BaseCommand):
     def handle(self, **options):
 
         downloader = Downloader(5, 0.0)
-        pipeline = Pipeline()
+        pipeline = StationsPipeline()
         spider_engine = SpiderEngine(
             spider=TrainsSpider(),
             pipeline=pipeline,
@@ -415,39 +455,3 @@ class Command(BaseCommand):
         print('Average request time: {:.2f} seconds'.format(total_request_time / total_requests))
         print('Requests per second: {:.2f}'.format(total_requests / total_time))
         print('Items scraped: {:d}'.format(pipeline.item_count))
-
-        import ipdb; from pprint import pprint; ipdb.set_trace()
-
-        # Region.objects.all().delete()
-        # Direction.objects.all().delete()
-        # Station.objects.all().delete()
-        #
-        # moscow_region = Region.objects.create(id=215, name='Москва')
-
-        # logger.debug('Waiting for stations')
-        # while (spider.downloader.get_unfinished_tasks_count()
-        #        or not spider.collected_stations.empty()):
-        #     try:
-        #         item = spider.collected_stations.get(timeout=0.25)
-        #     except queue.Empty:
-        #         print('unfinished_tasks_count', spider.downloader.get_unfinished_tasks_count(),
-        #               threading.current_thread().name)
-        #         continue
-        #     # direction = Direction.objects.filter(id=item['direction_id']).first()
-        #     # if direction is None:
-        #     #     direction = Direction.objects.create(
-        #     #         id=item['direction_id'], name=item['direction_name'], region=moscow_region)
-        #     # else:
-        #     #     assert direction.name == item['direction_name'], '%r != %r' % (
-        #     #         direction.name, item['direction_name'])
-        #     #
-        #     # station = Station.objects.filter(id=item['station_id']).first()
-        #     # if station is None:
-        #     #     station = Station.objects.create(
-        #     #         id=item['station_id'], name=item['station_name'])
-        #     # else:
-        #     #     assert station.name == item['station_name'], '%r != %r' % (
-        #     #         station.name, item['station_name'])
-        #     # station.directions.add(direction)
-        #
-        #     print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
