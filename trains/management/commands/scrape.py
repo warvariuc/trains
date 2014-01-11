@@ -20,6 +20,7 @@ import requests
 from lxml import html as lhtml
 
 from django.core.management.base import BaseCommand
+from django.db import connection
 
 from trains.models import Region, Direction, Station
 
@@ -205,7 +206,7 @@ class SpiderEngine():
 
         _callback_results = self.spider.start_requests()
         callback_results = []  # cumulative results from all callbacks
-        obj = None
+        request_or_item = None
 
         while True:
             if _callback_results:
@@ -215,23 +216,23 @@ class SpiderEngine():
             future = None
             try:
                 # use previously unused object or get a new one
-                if obj is None:
-                    obj = next(callback_results)  # request or item
+                if request_or_item is None:
+                    request_or_item = next(callback_results)  # request or item
             except StopIteration:
                 pass
             else:
-                if isinstance(obj, RequestWrapper):
+                if isinstance(request_or_item, RequestWrapper):
                     # try to schedule a request
-                    future = self.downloader.enqueue_request(obj)
+                    future = self.downloader.enqueue_request(request_or_item)
                     if future is not None:
                         # the request was successfully enqueued - do not try again
-                        obj = None
-                elif isinstance(obj, dict):  # it's an item
-                    self.pipeline.process_item(obj, self.spider)
-                    obj = None
+                        request_or_item = None
+                elif isinstance(request_or_item, Item):
+                    self.pipeline.process_item(request_or_item, self.spider)
+                    request_or_item = None
                     continue  # processing items is a priority
                 else:
-                    raise TypeError('Expected a Request or a dict instance')
+                    raise TypeError('Expected a Request or am Item instance')
 
             try:
                 # if a request was successfully schedules do not wait much for an item
@@ -239,7 +240,7 @@ class SpiderEngine():
                 timeout = 0.0 if future is not None else 0.01
                 request_wrapper, future = self.downloader.response_queue.get(timeout=timeout)
             except queue.Empty:
-                if not obj and not self.downloader.get_unfinished_requests_count():
+                if not request_or_item and not self.downloader.get_unfinished_requests_count():
                     # no more scheduled requests and objects from callbacks
                     break  # the spider has finished its work
             else:
@@ -345,12 +346,12 @@ class TrainsSpider(Spider):
             if not station_id:
                 continue  # separator
             station_name = station.xpath('./text()')[0]
-            station_item = {
-                'direction_name': direction_name,
-                'direction_id': direction_id,
-                'station_name': station_name,
-                'station_id': station_id,
-            }
+            station_item = StationItem(
+                direction_name=direction_name,
+                direction_id=direction_id,
+                station_name=station_name,
+                station_id=station_id,
+            )
             yield station_item
             stations.append((station_id, station_name))
 
@@ -372,10 +373,7 @@ class TrainsSpider(Spider):
             route_url = str(route_node)
             route_url = urlparse.urljoin(response_wrapper.response.url, route_url)
             if self.route_url_fps.add(route_url):
-                route_urls.append(route_url)
-
-
-route_urls = []
+                yield RouteItem(route_url=route_url)
 
 
 class ItemPipeline():
@@ -388,10 +386,23 @@ class ItemPipeline():
         pass
 
     def process_item(self, item, spider):
-        pass
+        assert isinstance(item, Item)
+        assert isinstance(spider, Spider)
 
 
-class StationsPipeline(ItemPipeline):
+class Item(dict):
+    pass
+
+
+class StationItem(Item):
+    pass
+
+
+class RouteItem(Item):
+    pass
+
+
+class TrainsPipeline(ItemPipeline):
     """
     """
     def __init__(self):
@@ -403,8 +414,7 @@ class StationsPipeline(ItemPipeline):
 
         self.moscow_region = Region.objects.create(id=215, name='Москва')
 
-    def process_item(self, item, spider):
-        self.item_count += 1
+    def _process_station_item(self, item):
         print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
 
         direction = Direction.objects.filter(id=item['direction_id']).first()
@@ -424,6 +434,18 @@ class StationsPipeline(ItemPipeline):
                 station.name, item['station_name'])
         station.directions.add(direction)
 
+    def _process_route_item(self, item):
+        print('Route: {route_url}'.format(**item))
+
+    def process_item(self, item, spider):
+        self.item_count += 1
+        if isinstance(item, StationItem):
+            self._process_station_item(item)
+        elif isinstance(item, RouteItem):
+            self._process_route_item(item)
+        else:
+            raise TypeError('Unsupported item type')
+
     def on_spider_finished(self, spider):
         pass
 
@@ -434,8 +456,12 @@ class Command(BaseCommand):
 
     def handle(self, **options):
 
+        # make insertions faster
+        connection.cursor().execute('PRAGMA journal_mode = MEMORY')
+        connection.cursor().execute('PRAGMA locking_mode = EXCLUSIVE')
+
         downloader = Downloader(5, 0.0)
-        pipeline = StationsPipeline()
+        pipeline = TrainsPipeline()
         spider_engine = SpiderEngine(
             spider=TrainsSpider(),
             pipeline=pipeline,
