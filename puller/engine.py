@@ -42,7 +42,7 @@ class SpiderEngine():
                 callback_results = itertools.chain(iter(_callback_results), callback_results)
                 _callback_results = None
 
-            future = None
+            enqueued = False
             try:
                 # use previously unused object or get a new one
                 if request_or_item is None:
@@ -52,8 +52,8 @@ class SpiderEngine():
             else:
                 if isinstance(request_or_item, RequestWrapper):
                     # try to schedule a request
-                    future = self.downloader.enqueue_request(request_or_item)
-                    if future is not None:
+                    enqueued = self.downloader.enqueue_request(request_or_item)
+                    if enqueued:
                         # the request was successfully enqueued - do not try again
                         request_or_item = None
                 elif isinstance(request_or_item, Item):
@@ -65,25 +65,20 @@ class SpiderEngine():
 
             # if a request was successfully scheduled do not wait much for an item
             # to take the next obj from callback ASAP
-            timeout = 0.0 if future is not None else 0.01
+            timeout = 0.0 if enqueued else 0.01
             try:
-                request_wrapper, future = self.downloader.response_queue.get(timeout=timeout)
+                response_wrapper = self.downloader.response_queue.get(timeout=timeout)
             except queue.Empty:
                 if not request_or_item and not self.downloader.get_unfinished_requests_count():
                     # no more scheduled requests and objects from callbacks
                     break  # the spider has finished its work
             else:
-                exc = future.exception()
-                if exc:
-                    logger.error('There was an exception: %s\n%s',
-                                 exc, '\n'.join(traceback.format_tb(exc.__traceback__)))
+                request_wrapper = response_wrapper.request_wrapper
+                if isinstance(response_wrapper.response, Exception):
                     if request_wrapper.errback:
-                        _callback_results = request_wrapper.errback(exc, request_wrapper)
+                        _callback_results = request_wrapper.errback(response_wrapper)
                 else:
                     if request_wrapper.callback:
-                        response_wrapper = ResponseWrapper(
-                            response=future.result(),
-                            request_wrapper=request_wrapper)
                         _callback_results = request_wrapper.callback(response_wrapper)
 
         logger.info('Finishing spider %r', self.spider.name)

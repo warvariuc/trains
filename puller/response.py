@@ -10,7 +10,7 @@ class ResponseWrapper():
     """Wrapper around requests.Response
     """
     def __init__(self, response, request_wrapper):
-        assert isinstance(response, requests.Response)
+        assert isinstance(response, (requests.Response, Exception))
         assert isinstance(request_wrapper, RequestWrapper)
         self.response = response
         self.request_wrapper = request_wrapper
