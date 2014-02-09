@@ -8,7 +8,8 @@ from .request import RequestWrapper
 class Spider():
     """Base spider.
     """
-    start_urls = ()
+    name = ''
+    start_urls = []
 
     def start_requests(self):
         for url in self.start_urls:

@@ -161,5 +161,11 @@ LOGGING = {
             'level': 'ERROR',
             'propagate': False,
         },
+        'puller': {
+            'level': 'WARNING',
+        },
+        'requests': {
+            'level': 'WARNING',
+        },
     }
 }

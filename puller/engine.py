@@ -7,6 +7,9 @@ import traceback
 
 from .request import RequestWrapper
 from .response import ResponseWrapper
+from .spider import Spider
+from .pipeline import ItemPipeline
+from .downloader import Downloader
 from .item import Item
 
 
@@ -17,22 +20,27 @@ class SpiderEngine():
     """
     """
     def __init__(self, spider, pipeline, downloader):
+        assert isinstance(spider, Spider)
+        assert isinstance(pipeline, ItemPipeline)
+        assert isinstance(downloader, Downloader)
         self.spider = spider
         self.pipeline = pipeline
         self.downloader = downloader
 
     def start(self):
+        logger.info('Starting puller engine')
 
+        logger.info('Starting spider %r', self.spider.name)
         self.pipeline.on_spider_started(self.spider)
 
         _callback_results = self.spider.start_requests()
-        callback_results = []  # cumulative results from all callbacks
+        callback_results = ()  # cumulative results from all callbacks
         request_or_item = None
 
         while True:
             if _callback_results:
                 callback_results = itertools.chain(iter(_callback_results), callback_results)
-                _callback_results = []
+                _callback_results = None
 
             future = None
             try:
@@ -55,10 +63,10 @@ class SpiderEngine():
                 else:
                     raise TypeError('Expected a Request or am Item instance')
 
+            # if a request was successfully scheduled do not wait much for an item
+            # to take the next obj from callback ASAP
+            timeout = 0.0 if future is not None else 0.01
             try:
-                # if a request was successfully scheduled do not wait much for an item
-                # to take the next obj from callback ASAP
-                timeout = 0.0 if future is not None else 0.01
                 request_wrapper, future = self.downloader.response_queue.get(timeout=timeout)
             except queue.Empty:
                 if not request_or_item and not self.downloader.get_unfinished_requests_count():
@@ -78,4 +86,5 @@ class SpiderEngine():
                             request_wrapper=request_wrapper)
                         _callback_results = request_wrapper.callback(response_wrapper)
 
+        logger.info('Finishing spider %r', self.spider.name)
         self.pipeline.on_spider_finished(self.spider)

@@ -7,7 +7,6 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-
 import puller
 
 from trains.models import Region, Direction, Station
@@ -17,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class RouteUrlFingerprints(puller.UrlFingerprints):
-    """
-    """
     def _calculate_fingerprint(self, url):
         return urlparse.urlparse(url).path
 
@@ -26,6 +23,7 @@ class RouteUrlFingerprints(puller.UrlFingerprints):
 class TrainsSpider(puller.Spider):
     """Spider to scrape electrical train data from Yandex.
     """
+    name = 'Yandex electrical trains spider'
     start_urls = [
         'http://m.rasp.yandex.ru/direction?city=213'
     ]
@@ -113,27 +111,27 @@ class TrainsPipeline(puller.ItemPipeline):
         self.moscow_region = Region.objects.create(id=215, name='Москва')
 
     def _process_station_item(self, item):
-        print('Station: {direction_name}, {station_name} ({station_id})'.format(**item))
+        print('Station item: {direction_name}, {station_name} ({station_id})'.format(**item))
 
-        direction = Direction.objects.filter(id=item['direction_id']).first()
+        direction = Direction.objects.filter(id=item.direction_id).first()
         if direction is None:
             direction = Direction.objects.create(
-                id=item['direction_id'], name=item['direction_name'], region=self.moscow_region)
+                id=item.direction_id, name=item.direction_name, region=self.moscow_region)
         else:
-            assert direction.name == item['direction_name'], '%r != %r' % (
-                direction.name, item['direction_name'])
+            assert direction.name == item.direction_name, '%r != %r' % (
+                direction.name, item.direction_name)
 
-        station = Station.objects.filter(id=item['station_id']).first()
+        station = Station.objects.filter(id=item.station_id).first()
         if station is None:
             station = Station.objects.create(
-                id=item['station_id'], name=item['station_name'])
+                id=item.station_id, name=item.station_name)
         else:
-            assert station.name == item['station_name'], '%r != %r' % (
-                station.name, item['station_name'])
+            assert station.name == item.station_name, '%r != %r' % (
+                station.name, item.station_name)
         station.directions.add(direction)
 
     def _process_route_item(self, item):
-        print('Route: {route_url}'.format(**item))
+        print('Route item: {route_url}'.format(**item))
 
     def process_item(self, item, spider):
         self.item_count += 1

@@ -2,10 +2,14 @@ __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
 import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent import futures
 import time
+import logging
 
 from .request import RequestWrapper
+
+
+logger = logging.getLogger(__name__)
 
 
 class Downloader():
@@ -13,7 +17,7 @@ class Downloader():
     """
     def __init__(self, max_workers, download_delay):
         assert isinstance(download_delay, (int, float))
-        self._executor = ThreadPoolExecutor(max_workers)
+        self._executor = futures.ThreadPoolExecutor(max_workers)
         self.response_queue = queue.Queue()
         self._last_request_time = 0
         self.download_delay = download_delay
@@ -36,12 +40,17 @@ class Downloader():
         def do_request(_request_wrapper=request_wrapper):
             """Send a request in a worker thread.
             """
+            logger.debug('Request to %s (thread %s)', _request_wrapper.url,
+                         threading.current_thread().name)
             start_time = time.time()
             result = _request_wrapper.session.request(*_request_wrapper.args,
                                                       **_request_wrapper.kwargs)
+            request_time = time.time() - start_time
+            logger.debug('Response from %s in %.3f s. (thread %s)', _request_wrapper.url,
+                         request_time, threading.current_thread().name)
             with self.lock:
                 self.request_count += 1
-                self.total_request_time += time.time() - start_time
+                self.total_request_time += request_time
             return result
 
         future = self._executor.submit(do_request)
