@@ -40,7 +40,7 @@ class SpiderEngine():
         while True:
             if _callback_results:
                 callback_results = itertools.chain(iter(_callback_results), callback_results)
-                _callback_results = None
+                _callback_results = ()
 
             enqueued = False
             try:
