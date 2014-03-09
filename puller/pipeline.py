@@ -5,7 +5,7 @@ from .spider import Spider
 
 
 class ItemPipeline():
-    """Base item pipeline
+    """Base item pipeline.
     """
     def on_spider_started(self, spider):
         pass

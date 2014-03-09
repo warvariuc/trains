@@ -3,9 +3,11 @@ __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 import logging
 from urllib import parse as urlparse
 import time
+import re
 
 from django.core.management.base import BaseCommand
 from django.db import connection
+from django.db import transaction
 
 import puller
 
@@ -16,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class RouteUrlFingerprints(puller.UrlFingerprints):
+    """Detect unique route URLs.
+    """
     def _calculate_fingerprint(self, url):
         return urlparse.urlparse(url).path
 
@@ -25,7 +29,7 @@ class TrainsSpider(puller.Spider):
     """
     name = 'Yandex electrical trains spider'
     start_urls = [
-        'http://m.rasp.yandex.ru/direction?city=213'
+        'http://m.rasp.yandex.ru/direction?city=213',
     ]
 
     def __init__(self, *args, **kwargs):
@@ -40,9 +44,9 @@ class TrainsSpider(puller.Spider):
             if 'direction=_unknown' in direction_url:
                 continue
             direction_url = urlparse.urljoin(response_wrapper.response.url, direction_url)
-            # direction_name = direction_node.xpath('./text()')[0]
-            # if 'горьковское' not in direction_name.lower():
-            #     continue
+            direction_name = direction_node.xpath('./text()')[0]
+            if 'горьковское' not in direction_name.lower():
+                continue
             yield puller.RequestWrapper(response_wrapper.session, 'GET', direction_url,
                                         callback=self.parse_direction)
 
@@ -78,16 +82,44 @@ class TrainsSpider(puller.Spider):
                 continue
             route_form.fields['station_to'] = station_to_id
             # logger.info('%s -> %s', station_from_name, station_to_name)
-            yield route_form.to_request(callback=self.parse_route)
-            # return
+            yield route_form.to_request(callback=self.parse_routes,
+                                        meta={'direction_id': direction_id})
+            return
+
+    def parse_routes(self, response_wrapper):
+        html_doc = response_wrapper.html_doc
+        for route_url in html_doc.xpath('//span[@class="time"]/a/@href'):
+            route_url = urlparse.urljoin(response_wrapper.response.url, str(route_url))
+            if self.route_url_fps.add(route_url):
+                yield puller.RequestWrapper(response_wrapper.session, 'GET', route_url,
+                                            callback=self.parse_route,
+                                            meta=response_wrapper.request_wrapper.meta)
+                # return
 
     def parse_route(self, response_wrapper):
         html_doc = response_wrapper.html_doc
-        for route_node in html_doc.xpath('//span[@class="time"]/a/@href'):
-            route_url = str(route_node)
-            route_url = urlparse.urljoin(response_wrapper.response.url, route_url)
-            if self.route_url_fps.add(route_url):
-                yield RouteItem(route_url=route_url)
+        route_url = response_wrapper.response.url
+        route_id = re.search(r'^/thread/(.+)$', urlparse.urlparse(route_url).path).group(1)
+
+        stations = []
+        for station_node in html_doc.xpath('//div[@class="b-holster b-route-station"]/h4'):
+            station_time = ''.join(station_node.xpath('./text()')).strip()
+            try:
+                station_time = re.search(r'.*(\d\d:\d\d|-)$', station_time).group(1)
+            except AttributeError:
+                print(station_time)
+                raise
+            station_url = station_node.xpath('./a/@href')[0]  # '/station/2000001/directions'
+            station_id = re.search(r'^/station/(\d+)/directions$', station_url).group(1)
+            station_url = urlparse.urljoin(route_url, station_url)
+            stations.append((int(station_id), station_time, station_url))
+
+        yield RouteItem(
+            route_url=route_url,
+            name=html_doc.xpath('//div[@class="b-holster"]/text()')[0].strip(),
+            direction_id=response_wrapper.request_wrapper.meta['direction_id'],
+            stations=stations,
+        )
 
 
 class StationItem(puller.Item):
@@ -102,7 +134,10 @@ class TrainsPipeline(puller.ItemPipeline):
     """
     """
     def __init__(self):
-        self.item_count = 0
+        # make insertions faster
+        connection.cursor().execute('PRAGMA journal_mode = MEMORY')
+        connection.cursor().execute('PRAGMA locking_mode = EXCLUSIVE')
+        transaction.set_autocommit(False)
 
         Region.objects.all().delete()
         Direction.objects.all().delete()
@@ -110,8 +145,10 @@ class TrainsPipeline(puller.ItemPipeline):
 
         self.moscow_region = Region.objects.create(id=215, name='Москва')
 
+        self.item_count = 0
+
     def _process_station_item(self, item):
-        print('Station item: {direction_name}, {station_name} ({station_id})'.format(**item))
+        print('Station item: {direction_name}, {station_name} ({station_id})'.format_map(item))
 
         direction = Direction.objects.filter(id=item.direction_id).first()
         if direction is None:
@@ -131,7 +168,8 @@ class TrainsPipeline(puller.ItemPipeline):
         station.directions.add(direction)
 
     def _process_route_item(self, item):
-        print('Route item: {route_url}'.format(**item))
+        import pprint
+        print('Route item: {}'.format(pprint.pformat(item)))
 
     def process_item(self, item, spider):
         self.item_count += 1
@@ -143,7 +181,7 @@ class TrainsPipeline(puller.ItemPipeline):
             raise TypeError('Unsupported item type')
 
     def on_spider_finished(self, spider):
-        pass
+        transaction.commit()
 
 
 class Command(BaseCommand):
@@ -151,10 +189,6 @@ class Command(BaseCommand):
     help = ''
 
     def handle(self, **options):
-
-        # make insertions faster
-        connection.cursor().execute('PRAGMA journal_mode = MEMORY')
-        connection.cursor().execute('PRAGMA locking_mode = EXCLUSIVE')
 
         downloader = puller.Downloader(max_workers=5, download_delay=0.0)
         pipeline = TrainsPipeline()

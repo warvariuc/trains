@@ -49,6 +49,8 @@ class SpiderEngine():
                     request_or_item = next(callback_results)  # request or item
             except StopIteration:
                 pass
+            except Exception:
+                logger.exception('Callback error')
             else:
                 if isinstance(request_or_item, RequestWrapper):
                     # try to schedule a request

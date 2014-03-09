@@ -1,4 +1,4 @@
-Django==1.6.1
-requests==2.1.0
+Django==1.6.2
+requests==2.2.1
 # sudo apt-get install libxml2 libxslt1.1 pytnon3-dev libxml2-dev libxslt-dev zlib1g-dev
-lxml==3.2.5
+lxml==3.3.3
