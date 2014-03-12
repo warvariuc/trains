@@ -4,6 +4,7 @@ import logging
 from urllib import parse as urlparse
 import time
 import re
+import datetime
 
 from django.core.management.base import BaseCommand
 from django.db import connection
@@ -11,7 +12,7 @@ from django.db import transaction
 
 import puller
 
-from trains.models import Region, Direction, Station
+from trains.models import Region, Direction, Station, Route, RouteStation
 
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,7 @@ class TrainsSpider(puller.Spider):
             if 'direction=_unknown' in direction_url:
                 continue
             direction_url = urlparse.urljoin(response_wrapper.response.url, direction_url)
-            direction_name = direction_node.xpath('./text()')[0]
-            if 'горьковское' not in direction_name.lower():
-                continue
+            # if 'горьковское' not in direction_node.xpath('./text()')[0].lower(): continue
             yield puller.RequestWrapper(response_wrapper.session, 'GET', direction_url,
                                         callback=self.parse_direction)
 
@@ -67,8 +66,8 @@ class TrainsSpider(puller.Spider):
             station_item = StationItem(
                 direction_name=direction_name,
                 direction_id=direction_id,
-                station_name=station_name,
-                station_id=station_id,
+                name=station_name,
+                id=station_id,
             )
             yield station_item
             stations.append((station_id, station_name))
@@ -84,7 +83,7 @@ class TrainsSpider(puller.Spider):
             # logger.info('%s -> %s', station_from_name, station_to_name)
             yield route_form.to_request(callback=self.parse_routes,
                                         meta={'direction_id': direction_id})
-            return
+            # return
 
     def parse_routes(self, response_wrapper):
         html_doc = response_wrapper.html_doc
@@ -100,34 +99,38 @@ class TrainsSpider(puller.Spider):
         html_doc = response_wrapper.html_doc
         route_url = response_wrapper.response.url
         route_id = re.search(r'^/thread/(.+)$', urlparse.urlparse(route_url).path).group(1)
+        route_name = html_doc.xpath('//div[@class="b-holster"]/text()')[0].strip()
 
         stations = []
         for station_node in html_doc.xpath('//div[@class="b-holster b-route-station"]/h4'):
             station_time = ''.join(station_node.xpath('./text()')).strip()
-            try:
-                station_time = re.search(r'.*(\d\d:\d\d|-)$', station_time).group(1)
-            except AttributeError:
-                print(station_time)
-                raise
+            station_time = re.search(r'.*(\d\d:\d\d|-)$', station_time).group(1)
             station_url = station_node.xpath('./a/@href')[0]  # '/station/2000001/directions'
             station_id = re.search(r'^/station/(\d+)/directions$', station_url).group(1)
             station_url = urlparse.urljoin(route_url, station_url)
-            stations.append((int(station_id), station_time, station_url))
+            stations.append({
+                'id': int(station_id),
+                'time': station_time,
+                'url': station_url,
+            })
 
         yield RouteItem(
-            route_url=route_url,
-            name=html_doc.xpath('//div[@class="b-holster"]/text()')[0].strip(),
+            url=route_url,
+            id=route_id,
+            name=route_name,
             direction_id=response_wrapper.request_wrapper.meta['direction_id'],
             stations=stations,
         )
 
 
 class StationItem(puller.Item):
-    pass
+    """
+    """
 
 
 class RouteItem(puller.Item):
-    pass
+    """
+    """
 
 
 class TrainsPipeline(puller.ItemPipeline):
@@ -139,37 +142,46 @@ class TrainsPipeline(puller.ItemPipeline):
         connection.cursor().execute('PRAGMA locking_mode = EXCLUSIVE')
         transaction.set_autocommit(False)
 
-        Region.objects.all().delete()
-        Direction.objects.all().delete()
-        Station.objects.all().delete()
+        Region.objects.all().delete()  # cascade delete all
 
         self.moscow_region = Region.objects.create(id=215, name='Москва')
 
         self.item_count = 0
 
-    def _process_station_item(self, item):
-        print('Station item: {direction_name}, {station_name} ({station_id})'.format_map(item))
+    def _process_station_item(self, station_item):
+        print('Station item: {direction_name}, {name} ({id})'.format_map(station_item))
 
-        direction = Direction.objects.filter(id=item.direction_id).first()
+        direction = Direction.objects.filter(id=station_item.direction_id).first()
         if direction is None:
             direction = Direction.objects.create(
-                id=item.direction_id, name=item.direction_name, region=self.moscow_region)
+                id=station_item.direction_id, name=station_item.direction_name,
+                region=self.moscow_region)
         else:
-            assert direction.name == item.direction_name, '%r != %r' % (
-                direction.name, item.direction_name)
+            assert direction.name == station_item.direction_name, '%r != %r' % (
+                direction.name, station_item.direction_name)
 
-        station = Station.objects.filter(id=item.station_id).first()
+        station = Station.objects.filter(id=station_item.id).first()
         if station is None:
             station = Station.objects.create(
-                id=item.station_id, name=item.station_name)
+                id=station_item.id, name=station_item.name)
         else:
-            assert station.name == item.station_name, '%r != %r' % (
-                station.name, item.station_name)
+            assert station.name == station_item.name, '%r != %r' % (
+                station.name, station_item.name)
         station.directions.add(direction)
 
-    def _process_route_item(self, item):
-        import pprint
-        print('Route item: {}'.format(pprint.pformat(item)))
+    def _process_route_item(self, route_item):
+        print('Route item: {name}'.format_map(route_item))
+        route = Route.objects.create(id=route_item.id, name=route_item.name,
+                                     direction_id=route_item.direction_id)
+        for i, station in enumerate(route_item.stations):
+            station_time = station['time']
+            if station_time == '-':
+                station_time = None
+            else:
+                match = re.match(r'(\d\d):(\d\d)', station_time)
+                station_time = datetime.time(hour=int(match.group(1)), minute=int(match.group(2)))
+            RouteStation.objects.create(route=route, station_id=station['id'], position=i,
+                                        time=station_time)
 
     def process_item(self, item, spider):
         self.item_count += 1
