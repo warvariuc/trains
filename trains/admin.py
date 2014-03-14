@@ -1,7 +1,11 @@
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
+import json
+import datetime
+
 from django.db import models
 from django.contrib import admin
+from django import forms
 from django.contrib.admin.templatetags.admin_static import static
 from django.utils.safestring import mark_safe
 from django.core.urlresolvers import reverse
@@ -30,7 +34,12 @@ def add_related_links(foreign_key_field):
             _links = []
             for related_obj in related_model.objects.filter(
                     **{foreign_key_field_name: instance.id}):
-                url = reverse(reverse_path + 'change', args=(related_obj.id,))
+                related_obj_id = related_obj.id
+                if isinstance(related_obj_id, str):
+                    # hot fix for charfield primery keys containing '_'
+                    # https://code.djangoproject.com/ticket/22266
+                    related_obj_id = related_obj_id.replace('_', '_5F')
+                url = reverse(reverse_path + 'change', args=(related_obj_id,))
                 _links.append('<a href="%s">%s</a>' % (url, related_obj))
             add_url = '%s?%s' % (reverse(reverse_path + 'add'),
                                  urlencode({foreign_key_field_name: instance.id}))
@@ -62,10 +71,98 @@ class DirectionAdmin(admin.ModelAdmin):
     """
 
 
-@add_related_links(RouteStation.route)
+class RouteStationInline(admin.TabularInline):
+    model = RouteStation
+    ordering = ['position']
+    formfield_overrides = {
+        models.TimeField: {'widget': forms.TimeInput(format='%H:%M')},
+    }
+
+
+class RouteStationsWidget(forms.Widget):
+
+    TIME_FORMAT = '%H:%M'
+    # def __init__(self, *args, **kwargs):
+    #     import ipdb; ipdb.set_trace()
+    #     super().__init__(*args, **kwargs)
+    # def value_from_datadict(self, data, files, name):
+
+    def render(self, name, value, attrs=None):
+        # import ipdb; ipdb.set_trace()
+        # value = json.dumps(value)
+        html = ['<ul>']
+        for route_station in value:
+            if route_station['position'] is None:
+                route_station['position'] = ''
+            route_station['time'] = (
+                '' if route_station['time'] is None else
+                route_station['time'].strftime(self.TIME_FORMAT))
+            route_station_str = '{position}|{time}|{id}|{name}'.format_map(route_station)
+            html.append('<li><input type="text" name="%s" value="%s"></li>' % (
+                name, route_station_str))
+        html.append('</ul>')
+        return mark_safe('\n'.join(html))
+
+    def value_from_datadict(self, data, files, name):
+        import ipdb; ipdb.set_trace()
+        return data.get(name, None)
+
+
+class RouteStationsField(forms.Field):
+    widget = RouteStationsWidget
+
+    def prepare_value(self, value):
+        print('def prepare_value(self, value):')
+        return value
+
+    def to_python(self, value):
+        return value
+
+
+class RouteForm(forms.ModelForm):
+    """Form configuring discount conditions and actions.
+    """
+    # route_stations = RouteStationsField(label=_("Станции"))
+    route_stations = forms.Field(widget=RouteStationsWidget, label=_("Станции"))
+
+    class Meta(object):
+        model = Route
+
+    def __init__(self, *args, instance=None, **kwargs):
+        route_stations = []
+        if instance is not None:
+            _route_stations = RouteStation.objects.filter(
+                route=instance).select_related('route', 'station')
+            _route_station_ids = []
+            for route_station in _route_stations:
+                route_stations.append({
+                    'id': route_station.station_id,
+                    'name': route_station.station.name,
+                    'position': route_station.position,
+                    'time': route_station.time,
+                })
+                _route_station_ids.append(route_station.station_id)
+            _direction_stations = Station.objects.filter(directions=instance.direction).exclude(
+                id__in=_route_station_ids)
+            for station in _direction_stations:
+                route_stations.append({
+                    'id': station.id,
+                    'name': station.name,
+                    'position': None,  # not in the route
+                    'time': None,
+            })
+
+        initial = {'route_stations': route_stations}
+        super().__init__(*args, instance=instance, initial=initial, **kwargs)
+
+    def save(self, *args, **kwargs):
+        return super().save(*args, **kwargs)
+
+
 class RouteAdmin(admin.ModelAdmin):
     """
     """
+    form = RouteForm
 
 
 class RouteStationAdmin(admin.ModelAdmin):

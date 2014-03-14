@@ -34,7 +34,7 @@ class TrainsSpider(puller.Spider):
     ]
 
     def __init__(self, *args, **kwargs):
-        super(TrainsSpider, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.route_url_fps = RouteUrlFingerprints()
 
     def parse(self, response_wrapper):

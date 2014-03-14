@@ -7,8 +7,10 @@ class Route(models.Model):
     """Маршрут.
     """
     id = models.CharField(max_length=50, primary_key=True)
-    name = models.CharField(max_length=255, help_text='Наименование маршрута')
-    direction = models.ForeignKey(Direction, verbose_name='Направление маршрута')
+    name = models.CharField(max_length=255, verbose_name='Наименование',
+                            help_text='Наименование маршрута')
+    direction = models.ForeignKey(Direction, verbose_name='Направление',
+                                  help_text='Направление маршрута')
 
     class Meta:
         app_label = 'trains'
@@ -42,4 +44,7 @@ class RouteStation(models.Model):
         verbose_name_plural = 'станции маршрута'
 
     def __str__(self):
-        return '%s: %s %s' % (self.route.name, self.station, self.time.strftime('%H:%M'))
+        text = '%s %s' % (self.station, self.time.strftime('%H:%M') if self.time else '-')
+        if self.route_id:
+            text = '%s: %s' % (self.route.name, text)
+        return text
