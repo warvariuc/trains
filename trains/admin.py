@@ -87,6 +87,10 @@ class RouteStationsWidget(forms.Widget):
     #     super().__init__(*args, **kwargs)
     # def value_from_datadict(self, data, files, name):
 
+    class Media:
+        js = ('js/jquery-2.1.0.min.js', 'js/jquery-ui-1.10.4.min.js',)
+        css = {'all': ('css/ui-lightness/jquery-ui-1.10.4.min.css',)}
+
     def render(self, name, value, attrs=None):
         # import ipdb; ipdb.set_trace()
         # value = json.dumps(value)
