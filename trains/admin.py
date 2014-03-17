@@ -5,6 +5,7 @@ import datetime
 
 from django.db import models
 from django.contrib import admin
+from django.template.loader import render_to_string
 from django import forms
 from django.contrib.admin.templatetags.admin_static import static
 from django.utils.safestring import mark_safe
@@ -26,7 +27,7 @@ def add_related_links(foreign_key_field):
     def decorator(cls):
         assert issubclass(cls, admin.ModelAdmin)
         reverse_path = "admin:%s_%s_" % (
-            related_model._meta.app_label, related_model.__name__.lower())
+            related_model._meta.app_label, related_model._meta.module_name)
 
         def links(self, instance):
             if instance.id is None:
@@ -88,24 +89,28 @@ class RouteStationsWidget(forms.Widget):
     # def value_from_datadict(self, data, files, name):
 
     class Media:
-        js = ('js/jquery-2.1.0.min.js', 'js/jquery-ui-1.10.4.min.js',)
-        css = {'all': ('css/ui-lightness/jquery-ui-1.10.4.min.css',)}
+        js = (
+            'js/jquery-2.1.0.min.js',
+            'js/jquery-ui-1.10.4.min.js',
+        )
+        css = {'all': (
+            'css/ui-lightness/jquery-ui-1.10.4.min.css',
+            'css/trains.css',
+        )}
 
     def render(self, name, value, attrs=None):
-        # import ipdb; ipdb.set_trace()
-        # value = json.dumps(value)
-        html = ['<ul>']
         for route_station in value:
             if route_station['position'] is None:
                 route_station['position'] = ''
             route_station['time'] = (
                 '' if route_station['time'] is None else
                 route_station['time'].strftime(self.TIME_FORMAT))
-            route_station_str = '{position}|{time}|{id}|{name}'.format_map(route_station)
-            html.append('<li><input type="text" name="%s" value="%s"></li>' % (
-                name, route_station_str))
-        html.append('</ul>')
-        return mark_safe('\n'.join(html))
+            route_station['value'] = '{position}|{time}|{id}|{name}'.format_map(route_station)
+
+        return render_to_string("route_stations.html", {
+            'route_stations': value,
+            'name': name,
+        })
 
     def value_from_datadict(self, data, files, name):
         import ipdb; ipdb.set_trace()

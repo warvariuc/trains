@@ -1,0 +1,12 @@
+#train_routes > li {
+    list-style-type: none;
+    padding: 3px;
+    background-color: #dddddd;
+    margin: 2px;
+}
+#direction_routes > li {
+    list-style-type: none;
+    padding: 3px;
+    background-color: #dddddd;
+    margin: 2px;
+}
