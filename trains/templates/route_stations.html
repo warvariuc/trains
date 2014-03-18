@@ -1,30 +1,33 @@
 {% load admin_static %}
-<table>
-    <tr>
-        <td>
-            <ul id="train_routes">
-                {% for route_station in route_stations %}
-                    {% if route_station.position != '' %}
-                        <li><input type="text" name="{{ name }}" value="{{ route_station.value }}"></li>
-                    {% endif %}
-                {% endfor %}
-            </ul>
-        </td>
-        <td>
-            <ul id="direction_routes">
-                {% for route_station in route_stations %}
-                    {% if route_station.position == '' %}
-                        <li><input type="text" name="{{ name }}" value="{{ route_station.value }}"></li>
-                    {% endif %}
-                {% endfor %}
-            </ul>
-        </td>
-    </tr>
-</table>
-
+<div style="float: left">
+    Станции маршрута
+    <ul id="train_routes">
+        {% for route_station in route_stations %}
+            {% if route_station.position != '' %}
+                <li><input type="text" name="{{ name }}" value="{{ route_station.value }}" style="width:100%"></li>
+            {% endif %}
+        {% endfor %}
+    </ul>
+</div>
+<div style="float: left">
+    Другие станции направления
+    <ul id="direction_routes">
+        {% for route_station in route_stations %}
+            {% if route_station.position == '' %}
+                <li><input type="text" name="{{ name }}" value="{{ route_station.value }}"></li>
+            {% endif %}
+        {% endfor %}
+    </ul>
+</div>
+<div style="clear: both"></div>
 <script>
 $(function() {
-    $( "#train_routes" ).sortable({connectWith: "#direction_routes"}).disableSelection();
+    $( "#train_routes" ).sortable({
+        connectWith: "#direction_routes",
+        update: function( event, ui ) {
+            alert('sorted!');
+        }
+    }).disableSelection();
     $( "#direction_routes" ).sortable({connectWith: "#train_routes"}).disableSelection();
 });
 </script>
