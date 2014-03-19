@@ -27,3 +27,6 @@ ul#direction_routes {
     text-align: center;
     vertical-align: middle;
 }
+#direction_routes .route_station_time {
+    width: 0.3em;
+}

@@ -6,7 +6,7 @@
             {% if route_station.position != '' %}
                 <li class="route_station">
                     <input type="hidden" name="{{ name }}" value="{{ route_station.value }}">
-                    <table cellpadding="0" cellspacing="0" border="0">
+                    <table style="border-style: hidden;">
                         <tr>
                             <td class="route_station_time">{{ route_station.time }}</td>
                             <td>{{ route_station.name }}</td>
@@ -23,7 +23,13 @@
         {% for route_station in route_stations %}
             {% if route_station.position == '' %}
                 <li class="route_station">
-                    <input type="text" name="{{ name }}" value="{{ route_station.value }}">
+                    <input type="hidden" name="{{ name }}" value="{{ route_station.value }}">
+                    <table style="border-style: hidden;">
+                        <tr>
+                            <td class="route_station_time">{{ route_station.time }}</td>
+                            <td>{{ route_station.name }}</td>
+                        </tr>
+                    </table>
                 </li>
             {% endif %}
         {% endfor %}
@@ -44,6 +50,7 @@ function combine_station_args(obj) {
 $(function() {
     $( "#train_routes" ).sortable({
         connectWith: "#direction_routes",
+        placeholder: "route_station",
         update: function( event, ui ) {
             $( "ul#train_routes > li > input" ).each(function( index ) {
                 var station = split_station_args( $( this ).val() );
@@ -57,7 +64,10 @@ $(function() {
             });
         }
     }).disableSelection();
-    $( "#direction_routes" ).sortable({connectWith: "#train_routes"}).disableSelection();
+    $( "#direction_routes" ).sortable({
+        connectWith: "#train_routes",
+        placeholder: "route_station"
+    }).disableSelection();
 });
 
 </script>
