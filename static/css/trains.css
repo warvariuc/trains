@@ -10,10 +10,20 @@ ul#direction_routes {
     columns: 3;
     -webkit-columns: 3;
     -moz-columns: 3;
-    background-color: #dddddd;
 }
-ul#train_routes > li, ul#direction_routes > li {
+.route_station {
     list-style-type: none;
-    padding: 3px 15px;
+    padding: 5px;
     margin: 2px;
+    background-color: #dddddd;
+    cursor: move;
+}
+.route_station_time {
+    background-color: #cccccc;
+    padding: 2px;
+    margin-right: 3px;
+    font-weight: bold;
+    width: 4em;
+    text-align: center;
+    vertical-align: middle;
 }

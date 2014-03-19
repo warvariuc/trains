@@ -1,10 +1,10 @@
 __author__ = 'Victor Varvariuc <victor.varvariuc@gmail.com>'
 
-import json
 import datetime
 
 from django.db import models
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 from django.template.loader import render_to_string
 from django import forms
 from django.contrib.admin.templatetags.admin_static import static
@@ -82,12 +82,6 @@ class RouteStationInline(admin.TabularInline):
 
 class RouteStationsWidget(forms.Widget):
 
-    TIME_FORMAT = '%H:%M'
-    # def __init__(self, *args, **kwargs):
-    #     import ipdb; ipdb.set_trace()
-    #     super().__init__(*args, **kwargs)
-    # def value_from_datadict(self, data, files, name):
-
     class Media:
         js = (
             'js/jquery-2.1.0.min.js',
@@ -99,40 +93,70 @@ class RouteStationsWidget(forms.Widget):
         )}
 
     def render(self, name, value, attrs=None):
-        for route_station in value:
-            if route_station['position'] is None:
-                route_station['position'] = ''
-            route_station['time'] = (
-                '' if route_station['time'] is None else
-                route_station['time'].strftime(self.TIME_FORMAT))
-            route_station['value'] = '{position}|{time}|{id}|{name}'.format_map(route_station)
-
         return render_to_string("route_stations.html", {
             'route_stations': value,
             'name': name,
         })
 
     def value_from_datadict(self, data, files, name):
-        import ipdb; ipdb.set_trace()
-        return data.get(name, None)
+        return [dict(zip(('position', 'time', 'id', 'name'), value.split('|')))
+                for value in data.getlist(name)]
 
 
 class RouteStationsField(forms.Field):
+
     widget = RouteStationsWidget
+    TIME_FORMAT = '%H:%M'
+    default_error_messages = {
+        'invalid_time': _('Неверное время: "%(time)s".')
+    }
 
     def prepare_value(self, value):
-        print('def prepare_value(self, value):')
+        if value is getattr(self, '_prepared_value', None):
+            # this method is called multiple times - do not prepare the value again
+            return value
+
+        for route_station in value:
+
+            if route_station['position'] is None:
+                route_station['position'] = ''
+            if route_station['time'] is None:
+                route_station['time'] = ''
+            elif isinstance(route_station['time'], datetime.time):
+                route_station['time'] = route_station['time'].strftime(self.TIME_FORMAT)
+            route_station['value'] = '{position}|{time}|{id}|{name}'.format_map(route_station)
+
+        self._prepared_value = value
         return value
 
     def to_python(self, value):
+        for route_station in value:
+            if route_station['position'] == '':
+                route_station['position'] = None
+                route_station['time'] = ''  # remove time
+            else:
+                route_station['position'] = int(route_station['position'])
+            if route_station['time'] == '':
+                route_station['time'] = None
+            else:
+                try:
+                    route_station['time'] = datetime.datetime.strptime(
+                        route_station['time'], self.TIME_FORMAT).time()
+                except ValueError:
+                    raise ValidationError(self.error_messages['invalid_time'], 'invalid',
+                                          route_station)
+            route_station['id'] = int(route_station['id'])
+
         return value
+
+    def validate(self, value):
+        super().validate(value)
 
 
 class RouteForm(forms.ModelForm):
     """Form configuring discount conditions and actions.
     """
-    # route_stations = RouteStationsField(label=_("Станции"))
-    route_stations = forms.Field(widget=RouteStationsWidget, label=_("Станции"))
+    route_stations = RouteStationsField(label=_("Станции"))
 
     class Meta(object):
         model = Route

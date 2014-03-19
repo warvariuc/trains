@@ -4,23 +4,34 @@
     <ul id="train_routes">
         {% for route_station in route_stations %}
             {% if route_station.position != '' %}
-                <li><input type="text" name="{{ name }}" value="{{ route_station.value }}" style="width:100%"></li>
+                <li class="route_station">
+                    <input type="hidden" name="{{ name }}" value="{{ route_station.value }}">
+                    <table cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td class="route_station_time">{{ route_station.time }}</td>
+                            <td>{{ route_station.name }}</td>
+                        </tr>
+                    </table>
+                </li>
             {% endif %}
         {% endfor %}
     </ul>
 </div>
-<div style="float: left">
+<div>
     Другие станции направления
     <ul id="direction_routes">
         {% for route_station in route_stations %}
             {% if route_station.position == '' %}
-                <li><input type="text" name="{{ name }}" value="{{ route_station.value }}"></li>
+                <li class="route_station">
+                    <input type="text" name="{{ name }}" value="{{ route_station.value }}">
+                </li>
             {% endif %}
         {% endfor %}
     </ul>
 </div>
-<div style="clear: both"></div>
+
 <script>
+
 function split_station_args( value ) {
     var split = value.split( '|' );
     return { position: split[0], time: split[1], id: split[2], name: split[3] }
@@ -48,6 +59,5 @@ $(function() {
     }).disableSelection();
     $( "#direction_routes" ).sortable({connectWith: "#train_routes"}).disableSelection();
 });
-</script>
 
-<div style="clear:both"></div>
+</script>
