@@ -8,7 +8,10 @@
                     <input type="hidden" name="{{ name }}" value="{{ route_station.value }}">
                     <table style="border-style: hidden;">
                         <tr>
-                            <td class="route_station_time">{{ route_station.time }}</td>
+                            <td class="route_station_time">
+                                <span>{{ route_station.time }}</span>
+                                <input maxlength="5" size="5" style="display: none;">
+                            </td>
                             <td>{{ route_station.name }}</td>
                         </tr>
                     </table>
@@ -26,7 +29,10 @@
                     <input type="hidden" name="{{ name }}" value="{{ route_station.value }}">
                     <table style="border-style: hidden;">
                         <tr>
-                            <td class="route_station_time">{{ route_station.time }}</td>
+                            <td class="route_station_time">
+                                <span>{{ route_station.time }}</span>
+                                <input maxlength="5" size="5" style="display: none;">
+                            </td>
                             <td>{{ route_station.name }}</td>
                         </tr>
                     </table>
@@ -43,7 +49,7 @@ function split_station_args( value ) {
     return { position: split[0], time: split[1], id: split[2], name: split[3] }
 }
 
-function combine_station_args(obj) {
+function combine_station_args( obj ) {
     return obj.position + '|' + obj.time + '|' + obj.id + '|' + obj.name
 }
 
@@ -52,15 +58,15 @@ $(function() {
         connectWith: "#direction_routes",
         placeholder: "route_station",
         update: function( event, ui ) {
-            $( "ul#train_routes > li > input" ).each(function( index ) {
+            $( "ul#train_routes > li > input" ).each( function( index ) {
                 var station = split_station_args( $( this ).val() );
                 station.position = index;
-                $( this ).val( combine_station_args(station) );
+                $( this ).val( combine_station_args( station ) );
             });
-            $( "ul#direction_routes > li > input" ).each(function( index ) {
+            $( "ul#direction_routes > li > input" ).each( function( index ) {
                 var station = split_station_args( $( this ).val() );
                 station.position = '';
-                $( this ).val( combine_station_args(station) );
+                $( this ).val( combine_station_args( station ) );
             });
         }
     }).disableSelection();
@@ -70,4 +76,40 @@ $(function() {
     }).disableSelection();
 });
 
+$( "#train_routes" ).on( "dblclick", ".route_station_time", function() {
+    var $this = $( this );
+    var $time = $this.children( 'span' ).first();
+    var $input = $this.children( 'input' ).first();
+    $input.val( $time.text() ).show().focus();
+    $time.hide();
+
+    function submitEdit() {
+        var value = $input.val().trim();
+        if (value.match(/.+/)) {  // TODO: improve regex
+            $time.text(value);
+            $input.hide();
+        }
+    }
+
+    function cancelEdit() {
+        $time.show();
+        $input.hide();
+    }
+
+    $input.focusout(cancelEdit);
+    $input.keypress( function(event) {
+        if (event.which == 13) {
+            event.preventDefault();
+            event.stopPropagation();
+            submitEdit();
+        }
+    });
+    $input.keyup( function(event) {
+        if (event.which == 27) {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelEdit();
+        }
+    });
+});
 </script>
