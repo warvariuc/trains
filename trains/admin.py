@@ -126,7 +126,7 @@ class RouteStationsField(forms.Field):
                 route_station['time'] = route_station['time'].strftime(self.TIME_FORMAT)
             route_station['value'] = '{position}|{time}|{id}|{name}'.format_map(route_station)
 
-        self._prepared_value = value
+        self._prepared_value = value  # save the prepared value
         return value
 
     def to_python(self, value):

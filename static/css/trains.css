@@ -1,7 +1,7 @@
 ul#train_routes {
     padding: 0;
     margin: 0;
-    width: 300px;
+    width: 200px;
 }
 ul#direction_routes {
     padding: 0;
@@ -13,7 +13,7 @@ ul#direction_routes {
 }
 .route_station {
     list-style-type: none;
-    padding: 5px;
+    padding: 4px;
     margin: 2px;
     background-color: #dddddd;
     cursor: move;
@@ -21,9 +21,9 @@ ul#direction_routes {
 .route_station_time {
     background-color: #cccccc;
     padding: 2px;
-    margin-right: 3px;
     font-weight: bold;
     width: 4em;
+    height: 2em;
     text-align: center;
     vertical-align: middle;
 }
