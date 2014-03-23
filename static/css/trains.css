@@ -11,12 +11,14 @@ ul#direction_routes {
     -webkit-columns: 3;
     -moz-columns: 3;
 }
-.route_station {
+li.route_station {
     list-style-type: none;
+    -webkit-column-break-inside: avoid;
     padding: 4px;
     margin: 2px;
     background-color: #dddddd;
     cursor: move;
+    min-height: 2em;
 }
 .route_station_time {
     background-color: #cccccc;

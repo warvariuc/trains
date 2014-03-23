@@ -108,7 +108,8 @@ class RouteStationsField(forms.Field):
     widget = RouteStationsWidget
     TIME_FORMAT = '%H:%M'
     default_error_messages = {
-        'invalid_time': _('Неверное время: "%(time)s".')
+        'invalid_time': _('Неверное время "%(time)s" на станции "%(name)s".'),
+        'time_required': _('Необходимо указать время на станции "%(name)s".'),
     }
 
     def prepare_value(self, value):
@@ -149,12 +150,38 @@ class RouteStationsField(forms.Field):
 
         return value
 
-    def validate(self, value):
-        super().validate(value)
+    def validate(self, route_stations):
+        super().validate(route_stations)
+        station_count = 0
+        for route_station in route_stations:
+            if route_station['position'] is not None:
+                assert route_station['position'] == station_count, 'Unexpected station order'
+                station_count += 1
+        if not station_count:
+            return
+        if route_stations[0]['time'] is None:
+            raise ValidationError(self.error_messages['time_required'], 'required',
+                                  route_stations[0])
+        if route_stations[station_count - 1]['time'] is None:
+            raise ValidationError(self.error_messages['time_required'], 'required',
+                                  route_stations[station_count - 1])
+        prev_time = None
+        for route_station in route_stations[:station_count]:
+            if route_station['time'] is None:
+                continue
+            if prev_time is not None:
+                _dummy_date = datetime.date(2000, 1, 1)
+                time_diff = (datetime.datetime.combine(_dummy_date, route_station['time']) -
+                             datetime.datetime.combine(_dummy_date, prev_time)).total_seconds()
+                if time_diff < 0:  # overflow to the next day?
+                    time_diff += 24 * 60 * 60
+                if time_diff == 0 or time_diff > 60 * 60:
+                    raise ValidationError(self.error_messages['invalid_time'], '', route_station)
+            prev_time = route_station['time']
 
 
 class RouteForm(forms.ModelForm):
-    """Form configuring discount conditions and actions.
+    """
     """
     route_stations = RouteStationsField(label=_("Станции"))
 
@@ -164,8 +191,8 @@ class RouteForm(forms.ModelForm):
     def __init__(self, *args, instance=None, **kwargs):
         route_stations = []
         if instance is not None:
-            _route_stations = RouteStation.objects.filter(
-                route=instance).select_related('route', 'station')
+            _route_stations = RouteStation.objects.filter(route=instance).order_by(
+                'position').select_related('route', 'station')
             _route_station_ids = []
             for route_station in _route_stations:
                 route_stations.append({
@@ -189,6 +216,15 @@ class RouteForm(forms.ModelForm):
         super().__init__(*args, instance=instance, initial=initial, **kwargs)
 
     def save(self, *args, **kwargs):
+        RouteStation.objects.filter(route=self.instance).delete()
+        _route_stations = []
+        for route_station in self.cleaned_data['route_stations']:
+            if route_station['position'] is None:
+                break
+            _route_stations.append(RouteStation(
+                route=self.instance, station_id=route_station['id'],
+                position=route_station['position'], time=route_station['time']))
+        RouteStation.objects.bulk_create(_route_stations)
         return super().save(*args, **kwargs)
 
 
