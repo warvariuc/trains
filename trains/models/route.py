@@ -9,8 +9,10 @@ class Route(models.Model):
     id = models.CharField(max_length=50, primary_key=True)
     name = models.CharField(max_length=255, verbose_name='Наименование',
                             help_text='Наименование маршрута')
+    description = models.TextField()
     direction = models.ForeignKey(Direction, verbose_name='Направление',
                                   help_text='Направление маршрута')
+    days = models.TextField()
 
     class Meta:
         app_label = 'trains'

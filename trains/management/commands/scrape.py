@@ -100,6 +100,7 @@ class TrainsSpider(puller.Spider):
         route_url = response_wrapper.response.url
         route_id = re.search(r'^/thread/(.+)$', urlparse.urlparse(route_url).path).group(1)
         route_name = html_doc.xpath('//div[@class="b-holster"]/text()')[0].strip()
+        route_days = html_doc.xpath('//div[@class="b-holster b-route-info"]/text()')[0].strip()
 
         stations = []
         for station_node in html_doc.xpath('//div[@class="b-holster b-route-station"]/h4'):
@@ -120,6 +121,7 @@ class TrainsSpider(puller.Spider):
             name=route_name,
             direction_id=response_wrapper.request_wrapper.meta['direction_id'],
             stations=stations,
+            days=route_days,
         )
 
 
@@ -142,7 +144,11 @@ class TrainsPipeline(puller.ItemPipeline):
         connection.cursor().execute('PRAGMA locking_mode = EXCLUSIVE')
         transaction.set_autocommit(False)
 
-        Region.objects.all().delete()  # cascade delete all
+        # Region.objects.all().delete()  # cascade delete all fails with "too many sql variables"
+        RouteStation.objects.all().delete()
+        Station.objects.all().delete()
+        Direction.objects.all().delete()
+        Region.objects.all().delete()
 
         self.moscow_region = Region.objects.create(id=215, name='Москва')
 
@@ -171,8 +177,12 @@ class TrainsPipeline(puller.ItemPipeline):
 
     def _process_route_item(self, route_item):
         print('Route item: {name}'.format_map(route_item))
-        route = Route.objects.create(id=route_item.id, name=route_item.name,
-                                     direction_id=route_item.direction_id)
+        route_description = '%s - %s' % (
+            Station.objects.get(id=route_item.stations[0]['id']).name,
+            Station.objects.get(id=route_item.stations[-1]['id']).name)
+        route = Route.objects.create(
+            id=route_item.id, name=route_item.name, direction_id=route_item.direction_id,
+            description=route_description, days=route_item.days)
         for i, station in enumerate(route_item.stations):
             station_time = station['time']
             if station_time == '-':
